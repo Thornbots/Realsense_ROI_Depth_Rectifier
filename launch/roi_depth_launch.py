@@ -30,8 +30,8 @@ def generate_launch_description():
             "enable_depth": "true",
             "enable_color": "true",
             # tune to your use-case
-            "depth_module.depth_profile": "848x480x30",
-            "rgb_camera.color_profile":   "848x480x30",
+            "depth_module.depth_profile": "640x480x60",
+            "rgb_camera.color_profile":   "640x480x60",
         }.items(),
     )
 
@@ -44,7 +44,7 @@ def generate_launch_description():
             "depth_ns":        "/camera/camera/depth",
             "color_ns":        "/camera/camera/color",
             "extrinsics_topic": "/camera/camera/extrinsics/depth_to_color",
-            "depth_scale":     0.001,   # D435i Z16 default
+            "depth_scale":     0.001,   # D435i Z16 default (,, to m)
             "min_depth_m":     0.1,
             "max_depth_m":     10.0,
         }],
