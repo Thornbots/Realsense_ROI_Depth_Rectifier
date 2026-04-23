@@ -30,8 +30,8 @@ def generate_launch_description():
             "enable_depth": "true",
             "enable_color": "true",
             # tune to your use-case
-            "depth_module.depth_profile": "640x480x60",
-            "rgb_camera.color_profile":   "640x480x60",
+            "depth_module.depth_profile": "640x480x15",
+            "rgb_camera.color_profile":   "640x480x15",
         }.items(),
     )
 
@@ -41,8 +41,8 @@ def generate_launch_description():
         name="roi_depth_node",
         output="screen",
         parameters=[{
-            "depth_ns":        "/camera/camera/depth",
-            "color_ns":        "/camera/camera/color",
+            "depth_ns":        "/camera/depth",
+            "color_ns":        "/camera/color",
             "extrinsics_topic": "/camera/camera/extrinsics/depth_to_color",
             "depth_scale":     0.001,   # D435i Z16 default (,, to m)
             "min_depth_m":     0.1,

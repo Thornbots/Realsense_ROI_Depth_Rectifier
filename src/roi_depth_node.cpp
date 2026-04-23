@@ -36,6 +36,7 @@
 // Build: add to your package's CMakeLists.txt and link against
 //        realsense2, sensor_msgs, vision_msgs, std_msgs, cv_bridge, rclcpp.
 
+#include <rclcpp_components/register_node_macro.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -57,7 +58,9 @@
 #include <cmath>
 #include <mutex>
 
-namespace
+namespace roi_depth_query
+{
+class RoiDepthNode : public rclcpp::Node
 {
 // Convert sensor_msgs/CameraInfo → rs2_intrinsics
 rs2_intrinsics cameraInfoToIntrinsics(const sensor_msgs::msg::CameraInfo & ci)
@@ -349,10 +352,6 @@ private:
 };
 
 
-int main(int argc, char ** argv)
-{
-    rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<RoiDepthNode>());
-    rclcpp::shutdown();
-    return 0;
-}
+};
+} // namespace roi_depth_query
+RCLCPP_COMPONENTS_REGISTER_NODE(roi_depth_query::RoiDepthNode)

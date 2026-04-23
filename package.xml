@@ -20,6 +20,7 @@
   <depend>realsense2_camera_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>message_filters</depend>
+  <depend>rclcpp_components</depend>
 
   <!-- librealsense2 is a system dependency installed by the realsense2_camera package -->
   <exec_depend>realsense2_camera</exec_depend>

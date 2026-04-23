@@ -16,7 +16,26 @@ find_package(OpenCV REQUIRED)
 find_package(realsense2 REQUIRED)
 find_package(message_filters REQUIRED)
 
-add_executable(roi_depth_node src/roi_depth_node.cpp)
+find_package(rclcpp_components REQUIRED)
+
+add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
+
+ament_target_dependencies(roi_depth_node
+  rclcpp rclcpp_components
+  sensor_msgs std_msgs vision_msgs
+  realsense2_camera_msgs cv_bridge message_filters)
+
+target_link_libraries(roi_depth_node
+  ${realsense2_LIBRARY} ${OpenCV_LIBS})
+
+rclcpp_components_register_node(roi_depth_node
+  PLUGIN "roi_depth_query::RoiDepthNode"
+  EXECUTABLE roi_depth_node_exe)
+
+install(TARGETS roi_depth_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
 
 target_include_directories(roi_depth_node PRIVATE
   ${realsense2_INCLUDE_DIRS}
