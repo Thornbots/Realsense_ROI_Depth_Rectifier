@@ -62,36 +62,7 @@ namespace roi_depth_query
 {
 class RoiDepthNode : public rclcpp::Node
 {
-// Convert sensor_msgs/CameraInfo → rs2_intrinsics
-rs2_intrinsics cameraInfoToIntrinsics(const sensor_msgs::msg::CameraInfo & ci)
-{
-    rs2_intrinsics intr{};
-    intr.width  = static_cast<int>(ci.width);
-    intr.height = static_cast<int>(ci.height);
-    intr.ppx    = static_cast<float>(ci.k[2]);
-    intr.ppy    = static_cast<float>(ci.k[5]);
-    intr.fx     = static_cast<float>(ci.k[0]);
-    intr.fy     = static_cast<float>(ci.k[4]);
-    intr.model  = RS2_DISTORTION_BROWN_CONRADY;
-    for (int i = 0; i < 5 && i < (int)ci.d.size(); ++i)
-        intr.coeffs[i] = static_cast<float>(ci.d[i]);
-    return intr;
-}
 
-// Convert realsense2_camera_msgs/Extrinsics → rs2_extrinsics
-rs2_extrinsics extrinsicsMsgToRs2(
-    const realsense2_camera_msgs::msg::Extrinsics & msg)
-{
-    rs2_extrinsics ex{};
-    for (int i = 0; i < 9; ++i) ex.rotation[i]    = msg.rotation[i];
-    for (int i = 0; i < 3; ++i) ex.translation[i] = msg.translation[i];
-    return ex;
-}
-}  // namespace
-
-
-class RoiDepthNode : public rclcpp::Node
-{
 public:
     explicit RoiDepthNode(const rclcpp::NodeOptions & opts = rclcpp::NodeOptions())
     : Node("roi_depth_node", opts)
@@ -167,6 +138,33 @@ public:
     }
 
 private:
+
+// Convert sensor_msgs/CameraInfo → rs2_intrinsics
+rs2_intrinsics cameraInfoToIntrinsics(const sensor_msgs::msg::CameraInfo & ci)
+{
+    rs2_intrinsics intr{};
+    intr.width  = static_cast<int>(ci.width);
+    intr.height = static_cast<int>(ci.height);
+    intr.ppx    = static_cast<float>(ci.k[2]);
+    intr.ppy    = static_cast<float>(ci.k[5]);
+    intr.fx     = static_cast<float>(ci.k[0]);
+    intr.fy     = static_cast<float>(ci.k[4]);
+    intr.model  = RS2_DISTORTION_BROWN_CONRADY;
+    for (int i = 0; i < 5 && i < (int)ci.d.size(); ++i)
+        intr.coeffs[i] = static_cast<float>(ci.d[i]);
+    return intr;
+}
+
+// Convert realsense2_camera_msgs/Extrinsics → rs2_extrinsics
+rs2_extrinsics extrinsicsMsgToRs2(
+    const realsense2_camera_msgs::msg::Extrinsics & msg)
+{
+    rs2_extrinsics ex{};
+    for (int i = 0; i < 9; ++i) ex.rotation[i]    = msg.rotation[i];
+    for (int i = 0; i < 3; ++i) ex.translation[i] = msg.translation[i];
+    return ex;
+}
+
     // ── LUT ─────────────────────────────────────────────────────────────────
     // lut_[v_c * color_w + u_c] = {u_d, v_d}  (-1 if out of depth FOV)
     struct DepthPx { int16_t u, v; };
