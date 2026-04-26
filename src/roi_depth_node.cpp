@@ -349,7 +349,5 @@ rs2_extrinsics extrinsicsMsgToRs2(
     }
 };
 
-
-};
 } // namespace roi_depth_query
 RCLCPP_COMPONENTS_REGISTER_NODE(roi_depth_query::RoiDepthNode)
