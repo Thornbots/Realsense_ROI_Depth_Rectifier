@@ -57,6 +57,13 @@ target_link_libraries(roi_depth_node
   ${OpenCV_LIBS}
 )
 
+add_executable(extrinsics_relay_node src/extrinsics_relay_node.cpp)
+ament_target_dependencies(extrinsics_relay_node
+  rclcpp realsense2_camera_msgs rcl_interfaces)
+install(TARGETS extrinsics_relay_node
+  DESTINATION lib/${PROJECT_NAME})
+  
+
 install(TARGETS roi_depth_node
   DESTINATION lib/${PROJECT_NAME}
 )
