@@ -158,6 +158,11 @@ namespace roi_depth_query
         rs2_extrinsics depth_to_color_{}, color_to_depth_{};
         bool depth_intr_ready_{false}, color_intr_ready_{false}, extr_ready_{false};
 
+        // Snapshot of intrinsics used for the current LUT — compared against
+        // incoming camera_info to detect profile changes without full equality checks
+        // on the message itself.
+        rs2_intrinsics lut_depth_intr_{}, lut_color_intr_{};
+
         vision_msgs::msg::Detection2D::ConstSharedPtr latest_roi_;
 
         rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_, color_info_sub_;
@@ -169,20 +174,39 @@ namespace roi_depth_query
         std::string depth_ns_, color_ns_, extr_topic_;
         double depth_scale_, min_depth_m_, max_depth_m_, center_sample_fraction_;
 
+        // Returns true if two rs2_intrinsics represent the same camera model
+        // (same resolution, focal length, principal point, and distortion).
+        // Used to detect actual profile changes vs. repeated identical publishes.
+        static bool intrinsicsEqual(const rs2_intrinsics &a, const rs2_intrinsics &b)
+        {
+            if (a.width != b.width || a.height != b.height) return false;
+            if (a.fx != b.fx || a.fy != b.fy)               return false;
+            if (a.ppx != b.ppx || a.ppy != b.ppy)           return false;
+            for (int i = 0; i < 5; ++i)
+                if (a.coeffs[i] != b.coeffs[i]) return false;
+            return true;
+        }
+
+        // Rebuild the LUT if any of the three inputs (depth intrinsics, color
+        // intrinsics, extrinsics) have changed since the last build.
+        // Called from every camera_info callback and from the extrinsics timer.
+        // Safe to call repeatedly — only does work when something actually changed.
         void tryBuildLut()
         {
             if (!depth_intr_ready_ || !color_intr_ready_) return;
 
             if (!extr_ready_) {
-                float I[9] = {1,0,0, 0,1,0, 0,0,1};
-                float T[3] = {0,0,0};
-                std::copy(I, I+9, depth_to_color_.rotation);
-                std::copy(T, T+3, depth_to_color_.translation);
-                std::copy(I, I+9, color_to_depth_.rotation);
-                std::copy(T, T+3, color_to_depth_.translation);
                 RCLCPP_WARN_ONCE(get_logger(),
-                    "Extrinsics not yet received — using identity. "
-                    "Ensure extrinsics_relay_node is running.");
+                    "Waiting for extrinsics (extrinsics_relay_node) before building LUT.");
+                return;
+            }
+
+            // Skip rebuild if nothing has changed since the last build.
+            if (lut_ready_ &&
+                intrinsicsEqual(depth_intr_, lut_depth_intr_) &&
+                intrinsicsEqual(color_intr_, lut_color_intr_))
+            {
+                return;
             }
 
             const int cw = color_intr_.width;
@@ -190,8 +214,17 @@ namespace roi_depth_query
             const int dw = depth_intr_.width;
             const int dh = depth_intr_.height;
 
-            RCLCPP_INFO(get_logger(),
-                "Building LUT: color %dx%d → depth %dx%d …", cw, ch, dw, dh);
+            if (lut_ready_) {
+                RCLCPP_INFO(get_logger(),
+                    "Camera profile changed — rebuilding LUT: color %dx%d → depth %dx%d",
+                    cw, ch, dw, dh);
+            } else {
+                RCLCPP_INFO(get_logger(),
+                    "Building LUT: color %dx%d → depth %dx%d …", cw, ch, dw, dh);
+            }
+
+            // Mark LUT invalid during rebuild so onDepth skips incomplete data
+            lut_ready_ = false;
             lut_.resize(static_cast<size_t>(cw * ch));
 
             for (int vc = 0; vc < ch; ++vc) {
@@ -211,8 +244,12 @@ namespace roi_depth_query
                     }
                 }
             }
+
+            // Snapshot the intrinsics used for this build so we can detect future changes
+            lut_depth_intr_ = depth_intr_;
+            lut_color_intr_ = color_intr_;
             lut_ready_ = true;
-            RCLCPP_INFO(get_logger(), "LUT built: %d×%d entries.", cw, ch);
+            RCLCPP_INFO(get_logger(), "LUT built: %dx%d entries.", cw, ch);
         }
 
         void onDepth(const sensor_msgs::msg::Image::ConstSharedPtr &depth_msg)
