@@ -1,16 +1,18 @@
-// roi_depth_node.cpp  (updated)
+// roi_depth_node.cpp
 //
-// Efficiently computes the non-zero mean depth inside a COLOR-space ROI
-// WITHOUT running rs2::align on the full frame.
+// Efficiently computes the 3-D position of a detected object in the camera
+// body frame WITHOUT running rs2::align on the full frame.
 //
 // IMPORTANT: /roi must arrive in color image space (NOT network/640x640 space).
 // Use detection_roi_relay_node to bridge from yolov8's /detections_output.
 //
-// New parameter:
+// Parameters:
 //   center_sample_fraction (double, default 0.25):
-//     Only the inner (fraction) of each bbox dimension is sampled.
+//     Only the inner (fraction) of each bbox dimension is sampled for depth.
 //     0.25 → inner 25% per axis → 6.25% of the bbox area.
 //     Set to 1.0 to sample the full bbox.
+//   output_frame_id (string, default "camera_color_frame"):
+//     frame_id written into the published PointStamped header.
 //
 // Topics consumed:
 //   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1)
@@ -20,13 +22,28 @@
 //   extrinsics arrive via parameter push from extrinsics_relay_node
 //
 // Topic published:
-//   /roi_depth_m   (std_msgs/Float32) — mean depth in metres
+//   /roi_point  (geometry_msgs/PointStamped)
+//     3-D position of the detected object in the ROS REP-103 camera body frame.
+//     Frame: X forward, Y left, Z up  (matches camera_color_frame in realsense-ros)
+//     Units: metres.
+//
+// Method:
+//   1. Mean depth is sampled over the inner center_sample_fraction of the bbox
+//      using the prebuilt color→depth pixel LUT (no full-frame align needed).
+//   2. The bbox centre pixel is deprojected at that depth via
+//      rs2_deproject_pixel_to_point, which applies the full Brown-Conrady
+//      distortion model — no separate FOV parameters are required.
+//   3. The resulting point is converted from the librealsense optical frame
+//      (X right, Y down, Z forward) to the ROS REP-103 sensor body frame:
+//        ros.x =  rs.z   (forward)
+//        ros.y = -rs.x   (left)
+//        ros.z = -rs.y   (up)
 
 #include <rclcpp_components/register_node_macro.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
-#include <std_msgs/msg/float32.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <realsense2_camera_msgs/msg/extrinsics.hpp>
 
@@ -54,6 +71,8 @@ namespace roi_depth_query
             color_ns_   = declare_parameter<std::string>("color_ns",   "/camera/color");
             extr_topic_ = declare_parameter<std::string>("extrinsics_topic",
                               "/camera/camera/extrinsics/depth_to_color");
+            output_frame_id_ = declare_parameter<std::string>(
+                              "output_frame_id", "camera_color_frame");
             depth_scale_   = declare_parameter<double>("depth_scale",   0.001);
             min_depth_m_   = declare_parameter<double>("min_depth_m",   0.1);
             max_depth_m_   = declare_parameter<double>("max_depth_m",   10.0);
@@ -124,11 +143,15 @@ namespace roi_depth_query
                 depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
                 std::bind(&RoiDepthNode::onDepth, this, std::placeholders::_1));
 
-            depth_pub_ = create_publisher<std_msgs::msg::Float32>("/roi_depth_m", 10);
+            // ── publisher ────────────────────────────────────────────────────────
+            point_pub_ = create_publisher<geometry_msgs::msg::PointStamped>("/roi_point", 10);
 
             RCLCPP_INFO(get_logger(),
-                "roi_depth_node ready | depth_ns=%s color_ns=%s | center_sample_fraction=%.2f",
-                depth_ns_.c_str(), color_ns_.c_str(), center_sample_fraction_);
+                "roi_depth_node ready | depth_ns=%s color_ns=%s\n"
+                "  output_frame_id=%s | center_sample_fraction=%.2f\n"
+                "  publishes: /roi_point (geometry_msgs/PointStamped, ROS REP-103)",
+                depth_ns_.c_str(), color_ns_.c_str(),
+                output_frame_id_.c_str(), center_sample_fraction_);
         }
 
     private:
@@ -169,9 +192,10 @@ namespace roi_depth_query
         rclcpp::Subscription<realsense2_camera_msgs::msg::Extrinsics>::SharedPtr extr_sub_;
         rclcpp::Subscription<vision_msgs::msg::Detection2D>::SharedPtr roi_sub_;
         rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
-        rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr depth_pub_;
 
-        std::string depth_ns_, color_ns_, extr_topic_;
+        rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr point_pub_;
+
+        std::string depth_ns_, color_ns_, extr_topic_, output_frame_id_;
         double depth_scale_, min_depth_m_, max_depth_m_, center_sample_fraction_;
 
         // Returns true if two rs2_intrinsics represent the same camera model
@@ -266,15 +290,19 @@ namespace roi_depth_query
             const cv::Mat &D = cv_depth->image;
 
             const auto &bbox = latest_roi_->bbox;
+            const float cx = float(bbox.center.position.x);
+            const float cy = float(bbox.center.position.y);
+
+            // ── Depth sampling ────────────────────────────────────────────────────
             double half_w = bbox.size_x / 2.0;
             double half_h = bbox.size_y / 2.0;
 
             // Shrink to center fraction
             double frac = std::clamp(center_sample_fraction_, 0.05, 1.0);
-            int x0 = static_cast<int>(std::round(bbox.center.position.x - half_w * frac));
-            int y0 = static_cast<int>(std::round(bbox.center.position.y - half_h * frac));
-            int x1 = static_cast<int>(std::round(bbox.center.position.x + half_w * frac));
-            int y1 = static_cast<int>(std::round(bbox.center.position.y + half_h * frac));
+            int x0 = static_cast<int>(std::round(cx - half_w * frac));
+            int y0 = static_cast<int>(std::round(cy - half_h * frac));
+            int x1 = static_cast<int>(std::round(cx + half_w * frac));
+            int y1 = static_cast<int>(std::round(cy + half_h * frac));
 
             x0 = std::max(0, x0);
             y0 = std::max(0, y0);
@@ -317,13 +345,37 @@ namespace roi_depth_query
                 return;
             }
 
-            std_msgs::msg::Float32 out;
-            out.data = float(sum / count);
-            depth_pub_->publish(out);
+            const float mean_depth_m = float(sum / count);
+
+            // ── 3-D point ─────────────────────────────────────────────────────────
+            //
+            // Deproject the bbox centre pixel at the measured mean depth.
+            // rs2_deproject_pixel_to_point applies the full Brown-Conrady distortion
+            // model, producing a point in the librealsense optical frame:
+            //   rs_pt[0] = X  (rightward)
+            //   rs_pt[1] = Y  (downward)
+            //   rs_pt[2] = Z  (forward)
+            //
+            // Convert to ROS REP-103 camera body frame (X forward, Y left, Z up):
+            //   ros.x =  rs_pt[2]
+            //   ros.y = -rs_pt[0]
+            //   ros.z = -rs_pt[1]
+            float cpx[2] = {cx, cy};
+            float rs_pt[3];
+            rs2_deproject_pixel_to_point(rs_pt, &color_intr_, cpx, mean_depth_m);
+
+            geometry_msgs::msg::PointStamped pt;
+            pt.header.stamp    = depth_msg->header.stamp;
+            pt.header.frame_id = output_frame_id_;
+            pt.point.x =  rs_pt[2];   // forward
+            pt.point.y = -rs_pt[0];   // left
+            pt.point.z = -rs_pt[1];   // up
+            point_pub_->publish(pt);
 
             RCLCPP_DEBUG(get_logger(),
-                "Center ROI [%d,%d→%d,%d] frac=%.2f: %.4f m (n=%u)",
-                x0, y0, x1, y1, frac, out.data, count);
+                "ROI point [frame=%s]: x=%.3f y=%.3f z=%.3f m  (depth_samples=%u)",
+                output_frame_id_.c_str(),
+                pt.point.x, pt.point.y, pt.point.z, count);
         }
     };
 
