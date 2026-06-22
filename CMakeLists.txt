@@ -15,7 +15,6 @@ find_package(realsense2_camera_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(realsense2 REQUIRED)
-find_package(message_filters REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 
@@ -24,7 +23,7 @@ add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
 ament_target_dependencies(roi_depth_node
   rclcpp rclcpp_components
   sensor_msgs geometry_msgs vision_msgs
-  realsense2_camera_msgs cv_bridge message_filters)
+  realsense2_camera_msgs cv_bridge)
 target_link_libraries(roi_depth_node
   ${realsense2_LIBRARY} ${OpenCV_LIBS})
 target_include_directories(roi_depth_node PRIVATE

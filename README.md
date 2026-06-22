@@ -17,9 +17,7 @@ using an Intel RealSense camera, without running `rs2::align` on the full frame.
         ▼
   roi_depth_node   ← samples depth LUT, depropjects bbox centre
         │
-        ├──▶  /roi_depth_m      (Float32)  mean depth, metres
-        ├──▶  /roi_angle_h_rad  (Float32)  horizontal bearing, radians
-        └──▶  /roi_angle_v_rad  (Float32)  vertical bearing,   radians
+        └──▶  /roi_point  (geometry_msgs/PointStamped)
 ```
 
 `extrinsics_relay_node` is a one-shot helper that forwards the
@@ -77,5 +75,15 @@ source install/setup.bash
 ## Launch
 
 ```bash
+# Standalone: camera + roi_depth_node, feed /roi yourself
 ros2 launch roi_depth_query roi_depth_launch.py
+
+# Also turn /detections_output into /roi for you
+ros2 launch roi_depth_query roi_depth_launch.py use_detection_picker:=true
 ```
+
+For the full production pipeline (RealSense → YOLOv8/TensorRT →
+detection_picker_node → roi_depth_node → DJI serial bridge), use
+`realsense_yolov8_nitros_bridge`'s `isaac_ros_yolov8_realsense.launch.py`
+instead, which wires `/roi_point` through to the gimbal controller via
+`dji_serial_bridge`'s `point_to_cv_target_node`.

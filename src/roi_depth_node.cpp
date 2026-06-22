@@ -69,8 +69,6 @@ namespace roi_depth_query
             // ── parameters ──────────────────────────────────────────────────────
             depth_ns_   = declare_parameter<std::string>("depth_ns",   "/camera/depth");
             color_ns_   = declare_parameter<std::string>("color_ns",   "/camera/color");
-            extr_topic_ = declare_parameter<std::string>("extrinsics_topic",
-                              "/camera/camera/extrinsics/depth_to_color");
             output_frame_id_ = declare_parameter<std::string>(
                               "output_frame_id", "camera_color_frame");
             depth_scale_   = declare_parameter<double>("depth_scale",   0.001);
@@ -189,13 +187,12 @@ namespace roi_depth_query
         vision_msgs::msg::Detection2D::ConstSharedPtr latest_roi_;
 
         rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_, color_info_sub_;
-        rclcpp::Subscription<realsense2_camera_msgs::msg::Extrinsics>::SharedPtr extr_sub_;
         rclcpp::Subscription<vision_msgs::msg::Detection2D>::SharedPtr roi_sub_;
         rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
 
         rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr point_pub_;
 
-        std::string depth_ns_, color_ns_, extr_topic_, output_frame_id_;
+        std::string depth_ns_, color_ns_, output_frame_id_;
         double depth_scale_, min_depth_m_, max_depth_m_, center_sample_fraction_;
 
         // Returns true if two rs2_intrinsics represent the same camera model

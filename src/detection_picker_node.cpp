@@ -1,4 +1,4 @@
-// detection_roi_relay_node.cpp
+// detection_picker_node.cpp
 //
 // Bridges the YOLOv8 decoder output to the roi_depth_node ROI input.
 //
