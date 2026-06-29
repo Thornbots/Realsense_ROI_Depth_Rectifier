@@ -19,19 +19,37 @@
 //        blue  team → exclude class IDs 0–3, keep 4–7
 //        red   team → exclude class IDs 4–7, keep 0–3
 //      (If no RefSysStatus has been received yet, all classes pass through with a warning.)
-//   4. Picks the highest-confidence surviving detection
+//   4. Ranks the surviving detections by a composite priority score (see below)
+//      and picks the single best one.
 //   5. Scales bbox from network space → color image space
 //   6. Republishes as a singular Detection2D on /roi
 //
+// Priority score (higher = preferred target):
+//      score = confidence
+//            + center_weight        * centrality
+//            + priority_class_bonus  (only if the detection's class is a
+//                                     priority class)
+//   where:
+//     - confidence  is the detection's highest hypothesis score (0–1).
+//     - centrality  is 1 at the image centre and 0 at the corners — it favours
+//       whatever the robot is already aimed at (the middle of the field of view).
+//     - priority classes are the higher-value targets to feed the gimbal first.
+//       Default {2, 6}: the "3rd" target in each team group (0–3 / 4–7).
+//   min_score still gates on raw confidence, so low-confidence noise never wins
+//   purely on centrality or class bonus.
+//
 // Parameters:
-//   detections_topic    (string, default "/detections_output")
-//   roi_topic           (string, default "/roi")
-//   ref_sys_topic       (string, default "/ref_sys_status")
-//   network_width       (int,    default 640)  — TensorRT input width
-//   network_height      (int,    default 640)  — TensorRT input height
-//   color_width         (int,    default 640)  — color stream width
-//   color_height        (int,    default 480)  — color stream height
-//   min_score           (double, default 0.0)  — ignore detections below this score
+//   detections_topic     (string,    default "/detections_output")
+//   roi_topic            (string,    default "/roi")
+//   ref_sys_topic        (string,    default "/ref_sys_status")
+//   network_width        (int,       default 640)  — TensorRT input width
+//   network_height       (int,       default 640)  — TensorRT input height
+//   color_width          (int,       default 640)  — color stream width
+//   color_height         (int,       default 480)  — color stream height
+//   min_score            (double,    default 0.0)  — ignore detections below this score
+//   center_weight        (double,    default 1.0)  — weight of centrality in score
+//   priority_class_bonus (double,    default 0.5)  — score added for a priority class
+//   priority_class_ids   (int array, default [2,6])— class IDs to prioritise
 //
 // Class-ID layout (8-class model):
 //   0–3  first  four classes  — excluded when on BLUE  team
@@ -47,9 +65,13 @@
 //   For 640×480 color → 640×640 network: x scale=1.0, y scale=0.75.
 //   With a square model and non-square input the y-axis is the critical one.
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -74,9 +96,19 @@ public:
         color_w_          = declare_parameter<int>("color_width",     640);
         color_h_          = declare_parameter<int>("color_height",    480);
         min_score_        = declare_parameter<double>("min_score",    0.0);
+        center_weight_       = declare_parameter<double>("center_weight",        1.0);
+        priority_class_bonus_= declare_parameter<double>("priority_class_bonus", 0.5);
+        priority_class_ids_  = declare_parameter<std::vector<int64_t>>(
+                                   "priority_class_ids", std::vector<int64_t>{2, 6});
 
         scale_x_ = static_cast<double>(color_w_) / static_cast<double>(network_w_);
         scale_y_ = static_cast<double>(color_h_) / static_cast<double>(network_h_);
+
+        // Half the network-image diagonal: the maximum possible distance from the
+        // image centre, used to normalise centrality into [0, 1].
+        half_diag_ = 0.5 * std::sqrt(
+            static_cast<double>(network_w_) * network_w_ +
+            static_cast<double>(network_h_) * network_h_);
 
         sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
             detections_topic_, 10,
@@ -84,27 +116,36 @@ public:
                 onDetections(msg);
             });
 
-        // Transient-local QoS mirrors what dji_serial_bridge_node publishes:
-        // a late-joining subscriber receives the last status immediately
-        // without waiting for the next 5 Hz referee update.
-        rclcpp::QoS ref_qos(1);
-        ref_qos.transient_local();
+        // Match dji_serial_bridge_node's publisher QoS exactly. It publishes
+        // ~/ref_sys with rclcpp::SensorDataQoS() (best-effort, volatile,
+        // KeepLast(5)). A reliable/transient-local subscriber would be QoS-
+        // incompatible and silently never connect, so the team filter would
+        // never learn the team colour. We accept that a late joiner may wait up
+        // to one referee update (~5 Hz) for the first status instead.
         ref_sys_sub_ = create_subscription<dji_serial_bridge::msg::RefSysStatus>(
-            ref_sys_topic_, ref_qos,
+            ref_sys_topic_, rclcpp::SensorDataQoS(),
             [this](dji_serial_bridge::msg::RefSysStatus::ConstSharedPtr msg) {
                 onRefSysStatus(msg);
             });
 
         pub_ = create_publisher<vision_msgs::msg::Detection2D>(roi_topic_, 10);
 
+        std::string priority_ids_str;
+        for (std::size_t i = 0; i < priority_class_ids_.size(); ++i) {
+            priority_ids_str += std::to_string(priority_class_ids_[i]);
+            if (i + 1 < priority_class_ids_.size()) priority_ids_str += ",";
+        }
+
         RCLCPP_INFO(get_logger(),
             "DetectionRoiRelayNode ready\n"
             "  %s (Detection2DArray) -> %s (Detection2D)\n"
             "  network %dx%d -> color %dx%d  (scale x=%.4f y=%.4f)\n"
+            "  scoring: confidence + %.2f*centrality + %.2f if class in {%s}  (min_score=%.3f)\n"
             "  team colour source: %s  (waiting for first status msg...)",
             detections_topic_.c_str(), roi_topic_.c_str(),
             network_w_, network_h_, color_w_, color_h_,
             scale_x_, scale_y_,
+            center_weight_, priority_class_bonus_, priority_ids_str.c_str(), min_score_,
             ref_sys_topic_.c_str());
     }
 
@@ -168,6 +209,26 @@ private:
         }
     }
 
+    // ── helper: true if this class_id is a high-priority target ─────────────
+    bool isPriorityClass(int class_id) const
+    {
+        return std::find(priority_class_ids_.begin(), priority_class_ids_.end(),
+                         static_cast<int64_t>(class_id)) != priority_class_ids_.end();
+    }
+
+    // ── helper: centrality of a bbox, 1 at image centre → 0 at the corners ──
+    //
+    // Operates in network space (the bbox coordinates as received). Favours the
+    // target the robot is already pointed at — the middle of the field of view.
+    double centrality(const vision_msgs::msg::Detection2D & det) const
+    {
+        const double dx = det.bbox.center.position.x - 0.5 * network_w_;
+        const double dy = det.bbox.center.position.y - 0.5 * network_h_;
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        const double c = 1.0 - dist / half_diag_;
+        return std::clamp(c, 0.0, 1.0);
+    }
+
     // ── main detections callback ─────────────────────────────────────────────
     void onDetections(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg)
     {
@@ -182,10 +243,12 @@ private:
                 ref_sys_topic_.c_str());
         }
 
-        // Pick highest-confidence detection above min_score that is not
-        // excluded by the team-colour class filter.
+        // Rank surviving detections by a composite priority score and keep the
+        // best. A detection must clear min_score on raw *confidence* to be
+        // eligible — centrality and the class bonus only re-order detections
+        // that are already confident enough, they never resurrect noise.
         const vision_msgs::msg::Detection2D * best = nullptr;
-        double best_score  = min_score_;
+        double best_priority = -1.0;   // composite score of the current best
         std::size_t n_filtered = 0;
 
         for (const auto & det : msg->detections) {
@@ -196,12 +259,21 @@ private:
                 continue;
             }
 
-            double score = 0.0;
+            double confidence = 0.0;
             for (const auto & hyp : det.results) {
-                score = std::max(score, hyp.hypothesis.score);
+                confidence = std::max(confidence, hyp.hypothesis.score);
             }
-            if (score > best_score) {
-                best_score = score;
+            if (confidence < min_score_) {
+                continue;
+            }
+
+            const double priority =
+                confidence
+                + center_weight_ * centrality(det)
+                + (isPriorityClass(class_id) ? priority_class_bonus_ : 0.0);
+
+            if (priority > best_priority) {
+                best_priority = priority;
                 best = &det;
             }
         }
@@ -226,11 +298,13 @@ private:
 
         pub_->publish(out);
 
+        const int best_class = topClassId(*best);
         RCLCPP_DEBUG(get_logger(),
-            "Relay: class=%d score=%.3f  "
+            "Relay: class=%d priority=%.3f (centrality=%.2f%s)  "
             "net(cx=%.1f cy=%.1f w=%.1f h=%.1f) -> color(cx=%.1f cy=%.1f w=%.1f h=%.1f)"
             "  [team-filtered %zu/%zu]",
-            topClassId(*best), best_score,
+            best_class, best_priority, centrality(*best),
+            isPriorityClass(best_class) ? " +priority-class" : "",
             best->bbox.center.position.x, best->bbox.center.position.y,
             best->bbox.size_x, best->bbox.size_y,
             out.bbox.center.position.x, out.bbox.center.position.y,
@@ -247,7 +321,10 @@ private:
     std::string detections_topic_, roi_topic_, ref_sys_topic_;
     int    network_w_, network_h_, color_w_, color_h_;
     double min_score_;
+    double center_weight_, priority_class_bonus_;
+    std::vector<int64_t> priority_class_ids_;
     double scale_x_, scale_y_;
+    double half_diag_;
 
     // ── runtime state ────────────────────────────────────────────────────────
     // nullopt until the first RefSysStatus message arrives.
