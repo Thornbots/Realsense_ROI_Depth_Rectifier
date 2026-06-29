@@ -17,6 +17,7 @@ find_package(OpenCV REQUIRED)
 find_package(realsense2 REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(dji_serial_bridge REQUIRED)
 
 # ── roi_depth_node (composable) ──────────────────────────────────────────────
 add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
@@ -37,7 +38,7 @@ rclcpp_components_register_node(roi_depth_node
 # to /roi (Detection2D, color image space)
 add_library(detection_picker_node SHARED src/detection_picker_node.cpp)
 ament_target_dependencies(detection_picker_node
-  rclcpp rclcpp_components vision_msgs)
+  rclcpp rclcpp_components vision_msgs dji_serial_bridge)
 rclcpp_components_register_node(detection_picker_node
   PLUGIN "roi_depth_query::DetectionRoiRelayNode"
   EXECUTABLE detection_picker_node_exe)
