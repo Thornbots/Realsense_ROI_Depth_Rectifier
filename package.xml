@@ -26,6 +26,11 @@
   <!-- librealsense2 is a system dependency installed by the realsense2_camera package -->
   <exec_depend>realsense2_camera</exec_depend>
 
+  <!-- detection_picker_visualizer.py (rclpy diagnostic overlay) -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

@@ -61,4 +61,11 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL)
 
+# ── Python diagnostic scripts ──────────────────────────────────────────────
+# detection_picker_visualizer.py: rclpy node, run with
+#   ros2 run roi_depth_query detection_picker_visualizer.py
+install(PROGRAMS
+    scripts/detection_picker_visualizer.py
+  DESTINATION lib/${PROJECT_NAME})
+
 ament_package()
