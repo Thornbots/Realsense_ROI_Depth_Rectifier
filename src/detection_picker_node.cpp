@@ -50,6 +50,9 @@
 //   center_weight        (double,    default 1.0)  — weight of centrality in score
 //   priority_class_bonus (double,    default 0.5)  — score added for a priority class
 //   priority_class_ids   (int array, default [2,6])— class IDs to prioritise
+//   max_output_rate_hz   (double,    default 10.0) — cap on /roi publish rate;
+//                                     extra detection frames are dropped. <=0
+//                                     disables the cap (publish every frame).
 //
 // Class-ID layout (8-class model):
 //   0–3  first  four classes  — excluded when on BLUE  team
@@ -100,6 +103,12 @@ public:
         priority_class_bonus_= declare_parameter<double>("priority_class_bonus", 0.5);
         priority_class_ids_  = declare_parameter<std::vector<int64_t>>(
                                    "priority_class_ids", std::vector<int64_t>{2, 6});
+        max_output_rate_hz_  = declare_parameter<double>("max_output_rate_hz", 10.0);
+
+        // Cap /roi publishing to at most max_output_rate_hz. <=0 disables the cap.
+        min_output_period_ = (max_output_rate_hz_ > 0.0)
+            ? rclcpp::Duration::from_seconds(1.0 / max_output_rate_hz_)
+            : rclcpp::Duration(0, 0);
 
         scale_x_ = static_cast<double>(color_w_) / static_cast<double>(network_w_);
         scale_y_ = static_cast<double>(color_h_) / static_cast<double>(network_h_);
@@ -141,11 +150,13 @@ public:
             "  %s (Detection2DArray) -> %s (Detection2D)\n"
             "  network %dx%d -> color %dx%d  (scale x=%.4f y=%.4f)\n"
             "  scoring: confidence + %.2f*centrality + %.2f if class in {%s}  (min_score=%.3f)\n"
+            "  max output rate: %.1f Hz\n"
             "  team colour source: %s  (waiting for first status msg...)",
             detections_topic_.c_str(), roi_topic_.c_str(),
             network_w_, network_h_, color_w_, color_h_,
             scale_x_, scale_y_,
             center_weight_, priority_class_bonus_, priority_ids_str.c_str(), min_score_,
+            max_output_rate_hz_,
             ref_sys_topic_.c_str());
     }
 
@@ -286,6 +297,20 @@ private:
             return;
         }
 
+        // Rate-limit the output to at most max_output_rate_hz. The inference /
+        // detection stream can arrive well above 10 Hz, but downstream (the
+        // gimbal via the serial bridge) only needs ~10 Hz, so drop the extra
+        // frames here instead of flooding /roi. Frames with no valid target
+        // return above, so they never consume the rate budget.
+        if (min_output_period_ > rclcpp::Duration(0, 0)) {
+            const rclcpp::Time now = get_clock()->now();
+            if (last_output_time_.has_value() &&
+                (now - *last_output_time_) < min_output_period_) {
+                return;
+            }
+            last_output_time_ = now;
+        }
+
         // Scale bbox from network space → color image space
         vision_msgs::msg::Detection2D out;
         out.header  = best->header;
@@ -323,12 +348,17 @@ private:
     double min_score_;
     double center_weight_, priority_class_bonus_;
     std::vector<int64_t> priority_class_ids_;
+    double max_output_rate_hz_;
     double scale_x_, scale_y_;
     double half_diag_;
 
     // ── runtime state ────────────────────────────────────────────────────────
     // nullopt until the first RefSysStatus message arrives.
     std::optional<bool> is_blue_team_;
+    // Output rate limiter: minimum wall-clock gap between /roi publishes, and
+    // the time of the last publish (nullopt until the first output).
+    rclcpp::Duration min_output_period_{0, 0};
+    std::optional<rclcpp::Time> last_output_time_;
 };
 
 }  // namespace roi_depth_query
