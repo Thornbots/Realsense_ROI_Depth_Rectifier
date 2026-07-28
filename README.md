@@ -15,9 +15,9 @@ using an Intel RealSense camera, without running `rs2::align` on the full frame.
    /roi (Detection2D, color image space)
         │
         ▼
-  roi_depth_node   ← samples depth LUT, depropjects bbox centre
+  roi_depth_node   ← samples depth LUT, deprojects bbox centre + 4 corners
         │
-        └──▶  /roi_point  (geometry_msgs/PointStamped)
+        └──▶  /cv/panel_detection  (dji_serial_bridge/msg/PanelDetection)
 ```
 
 `extrinsics_relay_node` is a one-shot helper that forwards the
@@ -30,13 +30,13 @@ so the LUT can be built.
 
 | Topic | Type | Description |
 |---|---|---|
-| `/roi_point` | `geometry_msgs/PointStamped` | 3-D position of the detected object in the camera body frame (metres) |
+| `/cv/panel_detection` | `dji_serial_bridge/msg/PanelDetection` | 4 bbox corners + center deprojected to 3-D in the camera body frame (metres), plus depth, confidence, class_id |
 
-The `header.frame_id` is set by the `output_frame_id` parameter (default `camera_color_frame`).  The `header.stamp` matches the depth image timestamp.
+The `header.frame_id` is set by the `output_frame_id` parameter (default `camera_color_frame`).  The `header.stamp` matches the depth image timestamp. Corner order is TL, TR, BR, BL; all points assume a planar panel at the single sampled depth (bbox rotation/`theta` is not applied — upstream YOLOv8 boxes are axis-aligned).
 
 ### Coordinate convention — ROS REP-103
 
-The point is expressed in the ROS REP-103 camera body frame: **X forward, Y left, Z up**.
+Each point is expressed in the ROS REP-103 camera body frame: **X forward, Y left, Z up**.
 
 Internally, `rs2_deproject_pixel_to_point` is called at the measured mean depth, producing an undistorted 3-D point in the librealsense optical frame (X right, Y down, Z forward), which is then remapped:
 
@@ -56,7 +56,7 @@ No external FOV parameters are required — all information is derived from the 
 |---|---|---|
 | `depth_ns` | `/camera/depth` | Namespace for depth topics |
 | `color_ns` | `/camera/color` | Namespace for color topics |
-| `output_frame_id` | `camera_color_frame` | `frame_id` written into the published `PointStamped` |
+| `output_frame_id` | `camera_color_frame` | `frame_id` written into the published `PanelDetection` |
 | `depth_scale` | `0.001` | Depth unit → metres (D435i default) |
 | `min_depth_m` | `0.1` | Reject depth samples closer than this |
 | `max_depth_m` | `10.0` | Reject depth samples farther than this |
@@ -85,5 +85,5 @@ ros2 launch roi_depth_query roi_depth_launch.py use_detection_picker:=true
 For the full production pipeline (RealSense → YOLOv8/TensorRT →
 detection_picker_node → roi_depth_node → DJI serial bridge), use
 `realsense_yolov8_nitros_bridge`'s `isaac_ros_yolov8_realsense.launch.py`
-instead, which wires `/roi_point` through to the gimbal controller via
-`dji_serial_bridge`'s `point_to_cv_target_node`.
+instead, which wires `/cv/panel_detection` through to `sentry_pkg`'s
+`point_to_cv_target_node`.

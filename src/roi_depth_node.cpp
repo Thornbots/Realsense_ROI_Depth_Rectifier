@@ -12,7 +12,7 @@
 //     0.25 → inner 25% per axis → 6.25% of the bbox area.
 //     Set to 1.0 to sample the full bbox.
 //   output_frame_id (string, default "camera_color_frame"):
-//     frame_id written into the published PointStamped header.
+//     frame_id written into the published PanelDetection header.
 //
 // Topics consumed:
 //   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1)
@@ -22,18 +22,20 @@
 //   extrinsics arrive via parameter push from extrinsics_relay_node
 //
 // Topic published:
-//   /roi_point  (geometry_msgs/PointStamped)
-//     3-D position of the detected object in the ROS REP-103 camera body frame.
-//     Frame: X forward, Y left, Z up  (matches camera_color_frame in realsense-ros)
+//   /cv/panel_detection  (dji_serial_bridge/msg/PanelDetection)
+//     Bbox corners + center deprojected to 3-D in the ROS REP-103 camera
+//     body frame (X forward, Y left, Z up), plus the depth used, the
+//     detection confidence, and its class_id. Corner order: TL,TR,BR,BL.
 //     Units: metres.
 //
 // Method:
 //   1. Mean depth is sampled over the inner center_sample_fraction of the bbox
 //      using the prebuilt color→depth pixel LUT (no full-frame align needed).
-//   2. The bbox centre pixel is deprojected at that depth via
-//      rs2_deproject_pixel_to_point, which applies the full Brown-Conrady
-//      distortion model — no separate FOV parameters are required.
-//   3. The resulting point is converted from the librealsense optical frame
+//   2. The bbox centre and its 4 corners are deprojected at that same depth
+//      (planar-panel assumption) via rs2_deproject_pixel_to_point, which
+//      applies the full Brown-Conrady distortion model. bbox.center.theta
+//      rotation is not applied — the upstream YOLOv8 boxes are axis-aligned.
+//   3. Each resulting point is converted from the librealsense optical frame
 //      (X right, Y down, Z forward) to the ROS REP-103 sensor body frame:
 //        ros.x =  rs.z   (forward)
 //        ros.y = -rs.x   (left)
@@ -43,9 +45,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
-#include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/point32.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <realsense2_camera_msgs/msg/extrinsics.hpp>
+#include <dji_serial_bridge/msg/panel_detection.hpp>
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
@@ -57,6 +60,7 @@
 #include <cmath>
 #include <mutex>
 #include <algorithm>
+#include <cstdlib>
 
 namespace roi_depth_query
 {
@@ -142,12 +146,13 @@ namespace roi_depth_query
                 std::bind(&RoiDepthNode::onDepth, this, std::placeholders::_1));
 
             // ── publisher ────────────────────────────────────────────────────────
-            point_pub_ = create_publisher<geometry_msgs::msg::PointStamped>("/roi_point", 10);
+            panel_pub_ = create_publisher<dji_serial_bridge::msg::PanelDetection>(
+                "/cv/panel_detection", 10);
 
             RCLCPP_INFO(get_logger(),
                 "roi_depth_node ready | depth_ns=%s color_ns=%s\n"
                 "  output_frame_id=%s | center_sample_fraction=%.2f\n"
-                "  publishes: /roi_point (geometry_msgs/PointStamped, ROS REP-103)",
+                "  publishes: /cv/panel_detection (dji_serial_bridge/msg/PanelDetection, ROS REP-103)",
                 depth_ns_.c_str(), color_ns_.c_str(),
                 output_frame_id_.c_str(), center_sample_fraction_);
         }
@@ -190,7 +195,7 @@ namespace roi_depth_query
         rclcpp::Subscription<vision_msgs::msg::Detection2D>::SharedPtr roi_sub_;
         rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
 
-        rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr point_pub_;
+        rclcpp::Publisher<dji_serial_bridge::msg::PanelDetection>::SharedPtr panel_pub_;
 
         std::string depth_ns_, color_ns_, output_frame_id_;
         double depth_scale_, min_depth_m_, max_depth_m_, center_sample_fraction_;
@@ -344,35 +349,53 @@ namespace roi_depth_query
 
             const float mean_depth_m = float(sum / count);
 
-            // ── 3-D point ─────────────────────────────────────────────────────────
+            // ── 3-D corners + center ────────────────────────────────────────────────
             //
-            // Deproject the bbox centre pixel at the measured mean depth.
-            // rs2_deproject_pixel_to_point applies the full Brown-Conrady distortion
-            // model, producing a point in the librealsense optical frame:
-            //   rs_pt[0] = X  (rightward)
-            //   rs_pt[1] = Y  (downward)
-            //   rs_pt[2] = Z  (forward)
-            //
-            // Convert to ROS REP-103 camera body frame (X forward, Y left, Z up):
-            //   ros.x =  rs_pt[2]
-            //   ros.y = -rs_pt[0]
-            //   ros.z = -rs_pt[1]
-            float cpx[2] = {cx, cy};
-            float rs_pt[3];
-            rs2_deproject_pixel_to_point(rs_pt, &color_intr_, cpx, mean_depth_m);
+            // Deproject the bbox centre and its 4 corners at the measured mean depth
+            // (planar-panel assumption — see file header). rs2_deproject_pixel_to_point
+            // applies the full Brown-Conrady distortion model, producing a point in the
+            // librealsense optical frame (X right, Y down, Z forward); convert each to
+            // the ROS REP-103 camera body frame: ros.x=rs.z, ros.y=-rs.x, ros.z=-rs.y.
+            auto deprojectToRos = [&](float u, float v) {
+                float px[2] = {u, v};
+                float rs_pt[3];
+                rs2_deproject_pixel_to_point(rs_pt, &color_intr_, px, mean_depth_m);
+                geometry_msgs::msg::Point32 p;
+                p.x =  rs_pt[2];   // forward
+                p.y = -rs_pt[0];   // left
+                p.z = -rs_pt[1];   // up
+                return p;
+            };
 
-            geometry_msgs::msg::PointStamped pt;
-            pt.header.stamp    = depth_msg->header.stamp;
-            pt.header.frame_id = output_frame_id_;
-            pt.point.x =  rs_pt[2];   // forward
-            pt.point.y = -rs_pt[0];   // left
-            pt.point.z = -rs_pt[1];   // up
-            point_pub_->publish(pt);
+            dji_serial_bridge::msg::PanelDetection msg;
+            msg.header.stamp    = depth_msg->header.stamp;
+            msg.header.frame_id = output_frame_id_;
+
+            // Corner order: TL, TR, BR, BL
+            msg.corners[0] = deprojectToRos(cx - half_w, cy - half_h);
+            msg.corners[1] = deprojectToRos(cx + half_w, cy - half_h);
+            msg.corners[2] = deprojectToRos(cx + half_w, cy + half_h);
+            msg.corners[3] = deprojectToRos(cx - half_w, cy + half_h);
+            msg.center      = deprojectToRos(cx, cy);
+            msg.depth_m     = mean_depth_m;
+
+            msg.confidence = 0.0f;
+            msg.class_id   = -1;
+            for (const auto &hyp : latest_roi_->results) {
+                if (hyp.hypothesis.score > msg.confidence) {
+                    msg.confidence = float(hyp.hypothesis.score);
+                    msg.class_id   = std::atoi(hyp.hypothesis.class_id.c_str());
+                }
+            }
+
+            panel_pub_->publish(msg);
 
             RCLCPP_DEBUG(get_logger(),
-                "ROI point [frame=%s]: x=%.3f y=%.3f z=%.3f m  (depth_samples=%u)",
+                "Panel detection [frame=%s]: center=(%.3f,%.3f,%.3f) depth=%.3fm "
+                "confidence=%.2f class_id=%d (depth_samples=%u)",
                 output_frame_id_.c_str(),
-                pt.point.x, pt.point.y, pt.point.z, count);
+                msg.center.x, msg.center.y, msg.center.z,
+                mean_depth_m, msg.confidence, msg.class_id, count);
         }
     };
 
