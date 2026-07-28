@@ -72,7 +72,7 @@ def generate_launch_description():
     )
 
     # Required: without this, roi_depth_node waits forever for extrinsics and
-    # never builds its LUT, so it silently never publishes /roi_point.
+    # never builds its LUT, so it silently never publishes /cv/panel_detection.
     extrinsics_relay = Node(
         package="roi_depth_query",
         executable="extrinsics_relay_node",

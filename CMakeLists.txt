@@ -24,7 +24,7 @@ add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
 ament_target_dependencies(roi_depth_node
   rclcpp rclcpp_components
   sensor_msgs geometry_msgs vision_msgs
-  realsense2_camera_msgs cv_bridge)
+  realsense2_camera_msgs cv_bridge dji_serial_bridge)
 target_link_libraries(roi_depth_node
   ${realsense2_LIBRARY} ${OpenCV_LIBS})
 target_include_directories(roi_depth_node PRIVATE
