@@ -33,16 +33,6 @@ rclcpp_components_register_node(roi_depth_node
   PLUGIN "roi_depth_query::RoiDepthNode"
   EXECUTABLE roi_depth_node_exe)
 
-# ── detection_picker_node (composable) ────────────────────────────────────
-# Bridges /detections_output (Detection2DArray, network space)
-# to /roi (Detection2D, color image space)
-add_library(detection_picker_node SHARED src/detection_picker_node.cpp)
-ament_target_dependencies(detection_picker_node
-  rclcpp rclcpp_components vision_msgs dji_serial_bridge)
-rclcpp_components_register_node(detection_picker_node
-  PLUGIN "roi_depth_query::DetectionRoiRelayNode"
-  EXECUTABLE detection_picker_node_exe)
-
 # ── extrinsics_relay_node (standalone executable) ────────────────────────────
 add_executable(extrinsics_relay_node src/extrinsics_relay_node.cpp)
 ament_target_dependencies(extrinsics_relay_node
@@ -51,7 +41,6 @@ ament_target_dependencies(extrinsics_relay_node
 # ── install ──────────────────────────────────────────────────────────────────
 install(TARGETS
     roi_depth_node
-    detection_picker_node
     extrinsics_relay_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

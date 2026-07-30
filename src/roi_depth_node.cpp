@@ -1,41 +1,54 @@
 // roi_depth_node.cpp
 //
-// Efficiently computes the 3-D position of a detected object in the camera
-// body frame WITHOUT running rs2::align on the full frame.
+// Efficiently computes the 3-D position of every YOLOv8 detection in the
+// camera body frame WITHOUT running rs2::align on the full frame.
 //
-// IMPORTANT: /roi must arrive in color image space (NOT network/640x640 space).
-// Use detection_roi_relay_node to bridge from yolov8's /detections_output.
+// Driving callback is /detections_output (network image space, ALL
+// detections) -- depth is a cached resource, not the trigger. This fixes
+// three bugs the old /roi + onDepth design had: a stale cached ROI that
+// was never cleared, output stamped with the depth frame's time instead
+// of the detection's, and per-frame re-deprojection against whatever ROI
+// happened to be cached. See README.md for the full rationale.
 //
 // Parameters:
 //   center_sample_fraction (double, default 0.25):
 //     Only the inner (fraction) of each bbox dimension is sampled for depth.
-//     0.25 → inner 25% per axis → 6.25% of the bbox area.
-//     Set to 1.0 to sample the full bbox.
-//   output_frame_id (string, default "camera_color_frame"):
-//     frame_id written into the published PanelDetection header.
+//   output_frame_id (string, default "camera"):
+//     frame_id written into the published PanelDetectionArray. Matches
+//     sentry_pkg/urdf/sentry.urdf.xacro's "camera" link, whose local +X/+Y/+Z
+//     (forward/left/up) match the REP-103 conversion below -- NOT
+//     realsense-ros's own "camera_color_frame"/"camera_color_optical_frame",
+//     which exist outside the URDF's TF tree entirely.
+//   depth_max_age_s (double, default 0.05):
+//     Max |detection_stamp - depth_stamp| before a detection is dropped
+//     rather than paired with stale/future depth.
+//   max_detections (int, default 16):
+//     Cap on detections processed per callback (bounds worst-case CPU).
+//   network_width/height, color_width/height (int):
+//     Bbox scaling from network (TensorRT input) space to color image
+//     space -- moved in from the departing detection_picker_node.
 //
 // Topics consumed:
-//   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1)
+//   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1, cached only)
 //   /camera/depth/camera_info      (sensor_msgs/CameraInfo)
 //   /camera/color/camera_info      (sensor_msgs/CameraInfo)
-//   /roi                           (vision_msgs/Detection2D — color image space)
+//   /detections_output             (vision_msgs/Detection2DArray, network space)
 //   extrinsics arrive via parameter push from extrinsics_relay_node
 //
 // Topic published:
-//   /cv/panel_detection  (dji_serial_bridge/msg/PanelDetection)
-//     Bbox corners + center deprojected to 3-D in the ROS REP-103 camera
-//     body frame (X forward, Y left, Z up), plus the depth used, the
-//     detection confidence, and its class_id. Corner order: TL,TR,BR,BL.
-//     Units: metres.
+//   /cv/panel_detections  (dji_serial_bridge/msg/PanelDetectionArray)
+//     One entry per input detection that had valid depth, in the same
+//     order. Corner order per entry: TL,TR,BR,BL. Units: metres.
 //
-// Method:
-//   1. Mean depth is sampled over the inner center_sample_fraction of the bbox
-//      using the prebuilt color→depth pixel LUT (no full-frame align needed).
-//   2. The bbox centre and its 4 corners are deprojected at that same depth
+// Method (per detection):
+//   1. Scale bbox from network space to color space (color_w/network_w).
+//   2. Mean depth is sampled over the inner center_sample_fraction of the
+//      bbox using the prebuilt color->depth pixel LUT (no full-frame align).
+//   3. The bbox centre and its 4 corners are deprojected at that same depth
 //      (planar-panel assumption) via rs2_deproject_pixel_to_point, which
 //      applies the full Brown-Conrady distortion model. bbox.center.theta
-//      rotation is not applied — the upstream YOLOv8 boxes are axis-aligned.
-//   3. Each resulting point is converted from the librealsense optical frame
+//      rotation is not applied -- the upstream YOLOv8 boxes are axis-aligned.
+//   4. Each resulting point is converted from the librealsense optical frame
 //      (X right, Y down, Z forward) to the ROS REP-103 sensor body frame:
 //        ros.x =  rs.z   (forward)
 //        ros.y = -rs.x   (left)
@@ -46,9 +59,11 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <geometry_msgs/msg/point32.hpp>
+#include <vision_msgs/msg/detection2_d_array.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <realsense2_camera_msgs/msg/extrinsics.hpp>
 #include <dji_serial_bridge/msg/panel_detection.hpp>
+#include <dji_serial_bridge/msg/panel_detection_array.hpp>
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
@@ -57,6 +72,7 @@
 #include <librealsense2/rs.hpp>
 
 #include <vector>
+#include <optional>
 #include <cmath>
 #include <mutex>
 #include <algorithm>
@@ -74,11 +90,22 @@ namespace roi_depth_query
             depth_ns_   = declare_parameter<std::string>("depth_ns",   "/camera/depth");
             color_ns_   = declare_parameter<std::string>("color_ns",   "/camera/color");
             output_frame_id_ = declare_parameter<std::string>(
-                              "output_frame_id", "camera_color_frame");
+                              "output_frame_id", "camera");
             depth_scale_   = declare_parameter<double>("depth_scale",   0.001);
             min_depth_m_   = declare_parameter<double>("min_depth_m",   0.1);
             max_depth_m_   = declare_parameter<double>("max_depth_m",   10.0);
             center_sample_fraction_ = declare_parameter<double>("center_sample_fraction", 0.25);
+            depth_max_age_s_ = declare_parameter<double>("depth_max_age_s", 0.05);
+            max_detections_  = declare_parameter<int>("max_detections", 16);
+
+            detections_topic_ = declare_parameter<std::string>(
+                              "detections_topic", "/detections_output");
+            network_w_ = declare_parameter<int>("network_width",  640);
+            network_h_ = declare_parameter<int>("network_height", 640);
+            color_w_   = declare_parameter<int>("color_width",  640);
+            color_h_   = declare_parameter<int>("color_height", 480);
+            scale_x_ = static_cast<double>(color_w_) / static_cast<double>(network_w_);
+            scale_y_ = static_cast<double>(color_h_) / static_cast<double>(network_h_);
 
             // ── subscriptions ────────────────────────────────────────────────────
             depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -134,27 +161,31 @@ namespace roi_depth_query
                     }
                 });
 
-            // /roi is in color image space — relay node handles the scaling
-            roi_sub_ = create_subscription<vision_msgs::msg::Detection2D>(
-                "/roi", 10,
-                [this](vision_msgs::msg::Detection2D::ConstSharedPtr m) {
-                    latest_roi_ = m;
-                });
-
+            // Depth is now a cached resource only -- detections drive output.
             depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
                 depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
-                std::bind(&RoiDepthNode::onDepth, this, std::placeholders::_1));
+                [this](sensor_msgs::msg::Image::ConstSharedPtr m) {
+                    std::lock_guard lk(depth_mutex_);
+                    latest_depth_ = m;
+                });
+
+            detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
+                detections_topic_, 10,
+                std::bind(&RoiDepthNode::onDetections, this, std::placeholders::_1));
 
             // ── publisher ────────────────────────────────────────────────────────
-            panel_pub_ = create_publisher<dji_serial_bridge::msg::PanelDetection>(
-                "/cv/panel_detection", 10);
+            panel_array_pub_ = create_publisher<dji_serial_bridge::msg::PanelDetectionArray>(
+                "/cv/panel_detections", 10);
 
             RCLCPP_INFO(get_logger(),
-                "roi_depth_node ready | depth_ns=%s color_ns=%s\n"
-                "  output_frame_id=%s | center_sample_fraction=%.2f\n"
-                "  publishes: /cv/panel_detection (dji_serial_bridge/msg/PanelDetection, ROS REP-103)",
-                depth_ns_.c_str(), color_ns_.c_str(),
-                output_frame_id_.c_str(), center_sample_fraction_);
+                "roi_depth_node ready | depth_ns=%s color_ns=%s | detections=%s\n"
+                "  output_frame_id=%s | center_sample_fraction=%.2f | depth_max_age_s=%.3f\n"
+                "  network %dx%d -> color %dx%d (scale x=%.4f y=%.4f) | max_detections=%d\n"
+                "  publishes: /cv/panel_detections (dji_serial_bridge/msg/PanelDetectionArray, ROS REP-103)",
+                depth_ns_.c_str(), color_ns_.c_str(), detections_topic_.c_str(),
+                output_frame_id_.c_str(), center_sample_fraction_, depth_max_age_s_,
+                network_w_, network_h_, color_w_, color_h_, scale_x_, scale_y_,
+                max_detections_);
         }
 
     private:
@@ -189,16 +220,21 @@ namespace roi_depth_query
         // on the message itself.
         rs2_intrinsics lut_depth_intr_{}, lut_color_intr_{};
 
-        vision_msgs::msg::Detection2D::ConstSharedPtr latest_roi_;
+        std::mutex depth_mutex_;
+        sensor_msgs::msg::Image::ConstSharedPtr latest_depth_;
 
         rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_, color_info_sub_;
-        rclcpp::Subscription<vision_msgs::msg::Detection2D>::SharedPtr roi_sub_;
         rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+        rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
 
-        rclcpp::Publisher<dji_serial_bridge::msg::PanelDetection>::SharedPtr panel_pub_;
+        rclcpp::Publisher<dji_serial_bridge::msg::PanelDetectionArray>::SharedPtr panel_array_pub_;
 
-        std::string depth_ns_, color_ns_, output_frame_id_;
+        std::string depth_ns_, color_ns_, output_frame_id_, detections_topic_;
         double depth_scale_, min_depth_m_, max_depth_m_, center_sample_fraction_;
+        double depth_max_age_s_;
+        int max_detections_;
+        int network_w_, network_h_, color_w_, color_h_;
+        double scale_x_, scale_y_;
 
         // Returns true if two rs2_intrinsics represent the same camera model
         // (same resolution, focal length, principal point, and distortion).
@@ -249,7 +285,7 @@ namespace roi_depth_query
                     "Building LUT: color %dx%d → depth %dx%d …", cw, ch, dw, dh);
             }
 
-            // Mark LUT invalid during rebuild so onDepth skips incomplete data
+            // Mark LUT invalid during rebuild so onDetections skips incomplete data
             lut_ready_ = false;
             lut_.resize(static_cast<size_t>(cw * ch));
 
@@ -278,28 +314,18 @@ namespace roi_depth_query
             RCLCPP_INFO(get_logger(), "LUT built: %dx%d entries.", cw, ch);
         }
 
-        void onDepth(const sensor_msgs::msg::Image::ConstSharedPtr &depth_msg)
+        // Returns nullopt if depth sampling failed for this bbox (empty
+        // clamped ROI or zero valid depth samples) -- caller skips this
+        // detection rather than aborting the whole batch.
+        std::optional<dji_serial_bridge::msg::PanelDetection>
+        deprojectDetection(const vision_msgs::msg::Detection2D &det, const cv::Mat &D)
         {
-            { std::lock_guard lk(lut_mutex_); if (!lut_ready_) return; }
-            if (!latest_roi_) return;
+            const auto &bbox = det.bbox;
+            const float cx = float(bbox.center.position.x) * float(scale_x_);
+            const float cy = float(bbox.center.position.y) * float(scale_y_);
+            const double half_w = (bbox.size_x * scale_x_) / 2.0;
+            const double half_h = (bbox.size_y * scale_y_) / 2.0;
 
-            cv_bridge::CvImageConstPtr cv_depth;
-            try { cv_depth = cv_bridge::toCvShare(depth_msg, "16UC1"); }
-            catch (const cv_bridge::Exception &e) {
-                RCLCPP_ERROR_ONCE(get_logger(), "cv_bridge: %s", e.what());
-                return;
-            }
-            const cv::Mat &D = cv_depth->image;
-
-            const auto &bbox = latest_roi_->bbox;
-            const float cx = float(bbox.center.position.x);
-            const float cy = float(bbox.center.position.y);
-
-            // ── Depth sampling ────────────────────────────────────────────────────
-            double half_w = bbox.size_x / 2.0;
-            double half_h = bbox.size_y / 2.0;
-
-            // Shrink to center fraction
             double frac = std::clamp(center_sample_fraction_, 0.05, 1.0);
             int x0 = static_cast<int>(std::round(cx - half_w * frac));
             int y0 = static_cast<int>(std::round(cy - half_h * frac));
@@ -312,9 +338,7 @@ namespace roi_depth_query
             y1 = std::min(int(color_intr_.height) - 1, y1);
 
             if (x0 > x1 || y0 > y1) {
-                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                    "Sampled ROI is empty [%d,%d→%d,%d]", x0, y0, x1, y1);
-                return;
+                return std::nullopt;
             }
 
             const int dw      = depth_intr_.width;
@@ -325,7 +349,6 @@ namespace roi_depth_query
             const float dmax  = float(max_depth_m_);
 
             double sum = 0.0; uint32_t count = 0;
-
             {
                 std::lock_guard lk(lut_mutex_);
                 for (int vc = y0; vc <= y1; ++vc) {
@@ -341,61 +364,89 @@ namespace roi_depth_query
                     }
                 }
             }
-
-            if (count == 0) {
-                RCLCPP_DEBUG(get_logger(), "No valid depth in center ROI.");
-                return;
-            }
+            if (count == 0) return std::nullopt;
 
             const float mean_depth_m = float(sum / count);
 
-            // ── 3-D corners + center ────────────────────────────────────────────────
-            //
-            // Deproject the bbox centre and its 4 corners at the measured mean depth
-            // (planar-panel assumption — see file header). rs2_deproject_pixel_to_point
-            // applies the full Brown-Conrady distortion model, producing a point in the
-            // librealsense optical frame (X right, Y down, Z forward); convert each to
-            // the ROS REP-103 camera body frame: ros.x=rs.z, ros.y=-rs.x, ros.z=-rs.y.
+            // See file header: optical (X right, Y down, Z forward) -> REP-103
+            // camera body frame (X forward, Y left, Z up).
             auto deprojectToRos = [&](float u, float v) {
                 float px[2] = {u, v};
                 float rs_pt[3];
                 rs2_deproject_pixel_to_point(rs_pt, &color_intr_, px, mean_depth_m);
                 geometry_msgs::msg::Point32 p;
-                p.x =  rs_pt[2];   // forward
-                p.y = -rs_pt[0];   // left
-                p.z = -rs_pt[1];   // up
+                p.x =  rs_pt[2];
+                p.y = -rs_pt[0];
+                p.z = -rs_pt[1];
                 return p;
             };
 
             dji_serial_bridge::msg::PanelDetection msg;
-            msg.header.stamp    = depth_msg->header.stamp;
-            msg.header.frame_id = output_frame_id_;
-
-            // Corner order: TL, TR, BR, BL
             msg.corners[0] = deprojectToRos(cx - half_w, cy - half_h);
             msg.corners[1] = deprojectToRos(cx + half_w, cy - half_h);
             msg.corners[2] = deprojectToRos(cx + half_w, cy + half_h);
             msg.corners[3] = deprojectToRos(cx - half_w, cy + half_h);
             msg.center      = deprojectToRos(cx, cy);
             msg.depth_m     = mean_depth_m;
+            msg.robot_track_id = 0;  // ungrouped -- set later by target_selector.py
 
             msg.confidence = 0.0f;
             msg.class_id   = -1;
-            for (const auto &hyp : latest_roi_->results) {
+            for (const auto &hyp : det.results) {
                 if (hyp.hypothesis.score > msg.confidence) {
                     msg.confidence = float(hyp.hypothesis.score);
                     msg.class_id   = std::atoi(hyp.hypothesis.class_id.c_str());
                 }
             }
+            return msg;
+        }
 
-            panel_pub_->publish(msg);
+        void onDetections(const vision_msgs::msg::Detection2DArray::ConstSharedPtr &det_msg)
+        {
+            { std::lock_guard lk(lut_mutex_); if (!lut_ready_) return; }
 
-            RCLCPP_DEBUG(get_logger(),
-                "Panel detection [frame=%s]: center=(%.3f,%.3f,%.3f) depth=%.3fm "
-                "confidence=%.2f class_id=%d (depth_samples=%u)",
-                output_frame_id_.c_str(),
-                msg.center.x, msg.center.y, msg.center.z,
-                mean_depth_m, msg.confidence, msg.class_id, count);
+            sensor_msgs::msg::Image::ConstSharedPtr depth_msg;
+            { std::lock_guard lk(depth_mutex_); depth_msg = latest_depth_; }
+            if (!depth_msg) return;
+
+            // depth_max_age_s_ gates a stalled depth stream from pairing with
+            // a fresh detection -- either side may lead, so compare |Δt|.
+            rclcpp::Time det_t(det_msg->header.stamp, RCL_ROS_TIME);
+            rclcpp::Time depth_t(depth_msg->header.stamp, RCL_ROS_TIME);
+            double age = std::abs((det_t - depth_t).seconds());
+            if (age > depth_max_age_s_) {
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                    "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — skipping frame.",
+                    age, depth_max_age_s_);
+                return;
+            }
+
+            cv_bridge::CvImageConstPtr cv_depth;
+            try { cv_depth = cv_bridge::toCvShare(depth_msg, "16UC1"); }
+            catch (const cv_bridge::Exception &e) {
+                RCLCPP_ERROR_ONCE(get_logger(), "cv_bridge: %s", e.what());
+                return;
+            }
+            const cv::Mat &D = cv_depth->image;
+
+            dji_serial_bridge::msg::PanelDetectionArray out;
+            out.header.stamp    = det_msg->header.stamp;
+            out.header.frame_id = output_frame_id_;
+
+            const std::size_t n = std::min(det_msg->detections.size(),
+                                            static_cast<std::size_t>(max_detections_));
+            for (std::size_t i = 0; i < n; ++i) {
+                auto pd = deprojectDetection(det_msg->detections[i], D);
+                if (!pd) continue;  // one bad bbox doesn't drop the whole batch
+                pd->header.stamp    = out.header.stamp;
+                pd->header.frame_id = out.header.frame_id;
+                out.detections.push_back(std::move(*pd));
+            }
+
+            // Published every driving frame, including empty, so rate stays
+            // 1:1 with /detections_output and downstream target-loss timeouts
+            // still fire on true detection loss.
+            panel_array_pub_->publish(out);
         }
     };
 
