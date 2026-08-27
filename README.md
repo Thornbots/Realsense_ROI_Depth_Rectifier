@@ -1,6 +1,6 @@
 # Realsense ROI Depth Rectifier
 
-Efficiently computes the depth **and bearing angles** for YOLO-style detections
+Computes the depth **and bearing angles** for YOLO-style detections
 using an Intel RealSense camera, without running `rs2::align` on the full frame.
 
 ## Architecture
@@ -19,9 +19,9 @@ using an Intel RealSense camera, without running `rs2::align` on the full frame.
 publish (depth is a cached resource, matched by stamp within
 `depth_max_age_s`), so output rate/stamps track the detector 1:1 and a
 stalled depth stream can't pair with a fresh detection. There is no
-picking step here — every detection that has valid depth goes out in the
-array; `sentry_pkg`'s `target_selector.py` (downstream, post-depth) does
-team filtering, 3D robot grouping, and the per-frame panel pick, and
+picking step here. Every detection with valid depth goes out in the
+array. `sentry_pkg`'s `target_selector.py` (downstream, post-depth) does
+team filtering, 3D robot grouping, and the per-frame panel pick, then
 republishes the winner as a singular `PanelDetection` on
 `/cv/panel_detection`.
 
@@ -37,9 +37,9 @@ so the LUT can be built.
 |---|---|---|
 | `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 bbox corners + center deprojected to 3-D in the camera body frame (metres), plus depth, confidence, class_id |
 
-The `header.frame_id` is set by the `output_frame_id` parameter (default `camera`, matching `sentry_pkg/urdf/sentry.urdf.xacro`'s camera link).  The `header.stamp` matches the driving `/detections_output` message's stamp, not the depth image's. Corner order is TL, TR, BR, BL; all points assume a planar panel at the single sampled depth (bbox rotation/`theta` is not applied — upstream YOLOv8 boxes are axis-aligned).
+The `header.frame_id` is set by the `output_frame_id` parameter (default `camera`, matching `sentry_pkg/urdf/sentry.urdf.xacro`'s camera link).  The `header.stamp` matches the driving `/detections_output` message's stamp, not the depth image's. Corner order is TL, TR, BR, BL; all points assume a planar panel at the single sampled depth (bbox rotation/`theta` is not applied, since upstream YOLOv8 boxes are axis-aligned).
 
-### Coordinate convention — ROS REP-103
+### Coordinate convention: ROS REP-103
 
 Each point is expressed in the ROS REP-103 camera body frame: **X forward, Y left, Z up**.
 
@@ -51,7 +51,7 @@ ros.y = -rs.x   (left)
 ros.z = -rs.y   (up)
 ```
 
-No external FOV parameters are required — all information is derived from the live `/camera/color/camera_info` stream.
+No external FOV parameters are required: all information comes from the live `/camera/color/camera_info` stream.
 
 ---
 

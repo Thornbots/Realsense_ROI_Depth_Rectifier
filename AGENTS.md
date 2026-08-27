@@ -1,13 +1,13 @@
-# Realsense_ROI_Depth_Rectifier — agent notes
+# Realsense_ROI_Depth_Rectifier: agent notes
 
 Computes depth **and bearing angles** for YOLO-style detections by sampling a
 depth LUT per ROI, instead of running `rs2::align` on the full frame.
-**Reference docs live in `README.md`** — architecture diagram, the published
+**Reference docs live in `README.md`**: architecture diagram, the published
 topic, the REP-103 coordinate convention, and the `roi_depth_node` parameter
-list. Read it before changing the output contract. This file is only the
+list. Read it before changing the output contract. This file only covers the
 operating contract.
 
-**The ROS package name is `roi_depth_query`, not the directory name** —
+**The ROS package name is `roi_depth_query`, not the directory name.**
 `--packages-select Realsense_ROI_Depth_Rectifier` selects nothing.
 
 Parent conventions in `../CLAUDE.md` apply, notably: **in-code comments under
@@ -38,8 +38,8 @@ source change always needs a rebuild; `--symlink-install` won't help.
   `../realsense-yolov8-nitros-bridge` and adds depth + bearing. Detection
   itself belongs upstream there; target selection/tracking and the aiming
   math belong to `../sentry_pkg`.
-- **Bearings are REP-103** (x forward, y left, z up) — the bbox is in network
+- Bearings are REP-103 (x forward, y left, z up). The bbox is in network
   space and gets scaled to color space here. Getting either convention wrong
   produces plausible-looking numbers aimed the wrong way, not an error.
-- Part of the current CV priority — see `../SESSION_NOTES.md`.
+- Part of the current CV priority; see `../SESSION_NOTES.md`.
 - Its own git repo (`Thornbots/Realsense_ROI_Depth_Rectifier`).
