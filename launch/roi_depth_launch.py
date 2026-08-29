@@ -33,10 +33,11 @@ def generate_launch_description():
         "launch", "rs_launch.py"
     )
 
-    # Matches the default camera_name/camera_namespace ("camera"/"camera") used
-    # by realsense2_camera's stock rs_launch.py, hence the doubled "camera/camera"
-    # prefix below and in roi_depth_node's depth_ns/color_ns/extrinsics defaults.
-    extrinsics_topic = "/camera/camera/extrinsics/depth_to_color"
+    # Matches the default camera_name="camera" in realsense2_camera's stock
+    # rs_launch.py, which passes it as both namespace= and name=. Only namespace
+    # affects topic resolution and there is no separate camera_namespace param,
+    # so topics get a single "/camera" prefix -- same as depth_ns/color_ns below.
+    extrinsics_topic = "/camera/extrinsics/depth_to_color"
 
     launch_args = [
         DeclareLaunchArgument(
