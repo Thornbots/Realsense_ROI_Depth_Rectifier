@@ -29,21 +29,25 @@ republishes the winner as a singular `PanelDetection` on
 `/extrinsics/depth_to_color` topic into `roi_depth_node`'s parameter server
 so the LUT can be built.
 
----
-
 ## Published topic
 
 | Topic | Type | Description |
 |---|---|---|
 | `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 bbox corners + center deprojected to 3-D in the camera body frame (metres), plus depth, confidence, class_id |
 
-The `header.frame_id` is set by the `output_frame_id` parameter (default `camera`, matching `sentry_pkg/urdf/sentry.urdf.xacro`'s camera link).  The `header.stamp` matches the driving `/detections_output` message's stamp, not the depth image's. Corner order is TL, TR, BR, BL; all points assume a planar panel at the single sampled depth (bbox rotation/`theta` is not applied, since upstream YOLOv8 boxes are axis-aligned).
+`header.frame_id` comes from the `output_frame_id` parameter (default
+`camera`, matching the URDF's camera link). `header.stamp` matches the
+driving `/detections_output` stamp, not the depth image's. Corner order is
+TL, TR, BR, BL, and all points assume a planar panel at the single sampled
+depth -- bbox rotation (`theta`) isn't applied, since upstream YOLOv8 boxes
+are axis-aligned.
 
 ### Coordinate convention: ROS REP-103
 
-Each point is expressed in the ROS REP-103 camera body frame: **X forward, Y left, Z up**.
-
-Internally, `rs2_deproject_pixel_to_point` is called at the measured mean depth, producing an undistorted 3-D point in the librealsense optical frame (X right, Y down, Z forward), which is then remapped:
+Each point is in the ROS REP-103 camera body frame: **X forward, Y left, Z
+up**. Internally `rs2_deproject_pixel_to_point` runs at the measured mean
+depth, producing an undistorted point in the librealsense optical frame (X
+right, Y down, Z forward), which is then remapped:
 
 ```
 ros.x =  rs.z   (forward)
@@ -51,9 +55,8 @@ ros.y = -rs.x   (left)
 ros.z = -rs.y   (up)
 ```
 
-No external FOV parameters are required: all information comes from the live `/camera/color/camera_info` stream.
-
----
+No external FOV parameters are needed; everything comes from the live
+`/camera/color/camera_info` stream.
 
 ## Parameters (`roi_depth_node`)
 
@@ -71,8 +74,6 @@ No external FOV parameters are required: all information comes from the live `/c
 | `detections_topic` | `/detections_output` | Driving input (Detection2DArray, network space) |
 | `network_width`/`network_height` | `640`/`640` | TensorRT input size, for bbox scaling |
 | `color_width`/`color_height` | `640`/`480` | Color stream size, for bbox scaling |
-
----
 
 ## Build
 
