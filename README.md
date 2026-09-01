@@ -39,7 +39,7 @@ so the LUT can be built.
 `camera`, matching the URDF's camera link). `header.stamp` matches the
 driving `/detections_output` stamp, not the depth image's. Corner order is
 TL, TR, BR, BL, and all points assume a planar panel at the single sampled
-depth -- bbox rotation (`theta`) isn't applied, since upstream YOLOv8 boxes
+depth. Bbox rotation (`theta`) isn't applied, since upstream YOLOv8 boxes
 are axis-aligned.
 
 ### Coordinate convention: ROS REP-103
