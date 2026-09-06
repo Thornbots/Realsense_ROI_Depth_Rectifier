@@ -124,6 +124,7 @@ class DetectionPickerVisualizer(Node):
         self.declare_parameter('center_weight', 1.0)
         self.declare_parameter('priority_class_bonus', 0.5)
         self.declare_parameter('priority_class_ids', [2, 6])
+        self.declare_parameter('is_blue_fallback', True)
         # exact (default, matches the original / Isaac timestamps line up) or
         # approximate sync as a fallback if stamps drift.
         self.declare_parameter('use_approx_sync', False)
@@ -141,6 +142,7 @@ class DetectionPickerVisualizer(Node):
         self.center_weight = float(gp('center_weight').value)
         self.priority_class_bonus = float(gp('priority_class_bonus').value)
         self.priority_class_ids = set(int(c) for c in gp('priority_class_ids').value)
+        self.is_blue_team = bool(gp('is_blue_fallback').value)
         use_approx = bool(gp('use_approx_sync').value)
         slop = float(gp('sync_slop').value)
         queue_size = int(gp('queue_size').value)
@@ -149,9 +151,6 @@ class DetectionPickerVisualizer(Node):
         # normalise centrality into [0, 1] -- identical to the C++ node.
         self.half_diag = 0.5 * math.sqrt(
             self.network_w * self.network_w + self.network_h * self.network_h)
-
-        # nullopt-equivalent: None until the first RefSysStatus arrives.
-        self.is_blue_team = None
 
         self._bridge = cv_bridge.CvBridge()
         self._pub = self.create_publisher(Image, output_topic, queue_size)
