@@ -20,7 +20,7 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 - Consumes `/detections_output` from `../realsense-yolov8-nitros-bridge` and
   adds depth + bearing. Detection itself belongs upstream there; target
-  selection/tracking and the aiming math belong to `../sentry_pkg`.
+  selection/tracking and the aiming math belong to `../thornbots_pkg`.
 - Bearings are REP-103 (x forward, y left, z up). The bbox is in network space
   and gets scaled to color space here. Getting either convention wrong produces
   plausible-looking numbers aimed the wrong way, not an error.

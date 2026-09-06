@@ -15,7 +15,7 @@
 //     Only the inner (fraction) of each bbox dimension is sampled for depth.
 //   output_frame_id (string, default "camera"):
 //     frame_id written into the published PanelDetectionArray. Matches
-//     sentry_pkg/urdf/sentry.urdf.xacro's "camera" link, whose local +X/+Y/+Z
+//     thornbots_pkg/urdf/sentry.urdf.xacro's "camera" link, whose local +X/+Y/+Z
 //     (forward/left/up) match the REP-103 conversion below -- NOT
 //     realsense-ros's own "camera_color_frame"/"camera_color_optical_frame",
 //     which exist outside the URDF's TF tree entirely.

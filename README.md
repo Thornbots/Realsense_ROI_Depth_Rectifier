@@ -20,7 +20,7 @@ publish (depth is a cached resource, matched by stamp within
 `depth_max_age_s`), so output rate/stamps track the detector 1:1 and a
 stalled depth stream can't pair with a fresh detection. There is no
 picking step here. Every detection with valid depth goes out in the
-array. `sentry_pkg`'s `target_selector.py` (downstream, post-depth) does
+array. `thornbots_pkg`'s `target_selector.py` (downstream, post-depth) does
 team filtering, 3D robot grouping, and the per-frame panel pick, then
 republishes the winner as a singular `PanelDetection` on
 `/cv/panel_detection`.
@@ -91,6 +91,6 @@ ros2 launch roi_depth_query roi_depth_launch.py
 ```
 
 For the full production pipeline (RealSense → YOLOv8/TensorRT →
-roi_depth_node → `sentry_pkg`'s `target_selector` → DJI serial bridge), use
+roi_depth_node → `thornbots_pkg`'s `target_selector` → DJI serial bridge), use
 `realsense_yolov8_nitros_bridge`'s `isaac_ros_yolov8_realsense.launch.py`
-instead, which wires `/cv/panel_detections` through to `sentry_pkg`.
+instead, which wires `/cv/panel_detections` through to `thornbots_pkg`.
