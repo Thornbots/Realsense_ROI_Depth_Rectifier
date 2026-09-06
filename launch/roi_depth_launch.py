@@ -59,8 +59,8 @@ def generate_launch_description():
             "enable_depth": "true",
             "enable_color": "true",
             # tune to your use-case
-            "depth_module.depth_profile": "640x480x15",
-            "rgb_camera.color_profile":   "640x480x15",
+            "depth_module.depth_profile": "640x480x60",
+            "rgb_camera.color_profile":   "640x480x60",
         }.items(),
     )
 
