@@ -10,9 +10,10 @@ operating contract.
 **The ROS package name is `roi_depth_query`, not the directory name.**
 `--packages-select Realsense_ROI_Depth_Rectifier` selects nothing.
 
-**Shadowed by `/workspaces/ros2_ws`** (`Dockerfile.thornbots`, `RECLONE_DEPTH`).
-Once built locally, a `src/` edit is live under `dexec.sh` but not in the user's
-terminal, which resolves to the image-baked clone. Confirm with
+**Shadowed by `/workspaces/ros2_ws`** (`Dockerfile.thornbots` copies this
+directory in at build time). Once built locally, a `src/` edit is live under
+`dexec.sh` but not in the user's terminal, which resolves to the image-baked
+snapshot. Confirm with
 `../isaac_ros_common/scripts/dexec.sh -- ros2 pkg prefix roi_depth_query`. C++,
 so a source change always needs a rebuild; `--symlink-install` won't help.
 
