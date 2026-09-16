@@ -1,5 +1,19 @@
+# Copyright 2026 Thornbots
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-launch/roi_depth_launch.py
+Standalone ROI depth test launch: camera, extrinsics relay, roi_depth_node.
 
 Standalone test/dev launch for this package: starts the D435i driver
 (align_depth disabled), the extrinsics relay (required so roi_depth_node
@@ -18,85 +32,86 @@ isaac_ros_yolov8_realsense.launch.py for the full production pipeline
 (camera -> inference -> depth -> serial bridge).
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-import os
 
 
 def generate_launch_description():
     rs_launch = os.path.join(
-        get_package_share_directory("realsense2_camera"),
-        "launch", "rs_launch.py"
+        get_package_share_directory('realsense2_camera'),
+        'launch', 'rs_launch.py'
     )
 
     # Matches the default camera_name="camera" in realsense2_camera's stock
     # rs_launch.py, which passes it as both namespace= and name=. Only namespace
     # affects topic resolution and there is no separate camera_namespace param,
     # so topics get a single "/camera" prefix -- same as depth_ns/color_ns below.
-    extrinsics_topic = "/camera/extrinsics/depth_to_color"
+    extrinsics_topic = '/camera/extrinsics/depth_to_color'
 
     launch_args = [
         DeclareLaunchArgument(
-            "detections_topic", default_value="/detections_output"),
-        DeclareLaunchArgument("network_width", default_value="640"),
-        DeclareLaunchArgument("network_height", default_value="640"),
-        DeclareLaunchArgument("color_width", default_value="640"),
-        DeclareLaunchArgument("color_height", default_value="480"),
+            'detections_topic', default_value='/detections_output'),
+        DeclareLaunchArgument('network_width', default_value='640'),
+        DeclareLaunchArgument('network_height', default_value='640'),
+        DeclareLaunchArgument('color_width', default_value='640'),
+        DeclareLaunchArgument('color_height', default_value='480'),
     ]
 
     realsense = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(rs_launch),
         launch_arguments={
             # ---------- keep alignment OFF ----------
-            "align_depth.enable": "false",
+            'align_depth.enable': 'false',
             # publish extrinsics so the LUT can be exact
-            "publish_tf": "true",
+            'publish_tf': 'true',
             # usual streams
-            "enable_depth": "true",
-            "enable_color": "true",
+            'enable_depth': 'true',
+            'enable_color': 'true',
             # tune to your use-case
-            "depth_module.depth_profile": "640x480x60",
-            "rgb_camera.color_profile":   "640x480x60",
+            'depth_module.depth_profile': '640x480x60',
+            'rgb_camera.color_profile':   '640x480x60',
         }.items(),
     )
 
     # Required: without this, roi_depth_node waits forever for extrinsics and
     # never builds its LUT, so it silently never publishes /cv/panel_detections.
     extrinsics_relay = Node(
-        package="roi_depth_query",
-        executable="extrinsics_relay_node",
-        name="extrinsics_relay",
-        output="screen",
+        package='roi_depth_query',
+        executable='extrinsics_relay_node',
+        name='extrinsics_relay',
+        output='screen',
         parameters=[{
-            "extrinsics_topic": extrinsics_topic,
-            "target_node":      "/roi_depth_node",
+            'extrinsics_topic': extrinsics_topic,
+            'target_node':      '/roi_depth_node',
         }],
     )
 
     roi_depth = Node(
-        package="roi_depth_query",
+        package='roi_depth_query',
         # NOTE: the composable-node macro names the standalone executable
         # "roi_depth_node_exe" (see CMakeLists.txt EXECUTABLE arg) — the
         # library/plugin target itself is "roi_depth_node", but that is not
         # an installed binary you can `ros2 run`.
-        executable="roi_depth_node_exe",
-        name="roi_depth_node",
-        output="screen",
+        executable='roi_depth_node_exe',
+        name='roi_depth_node',
+        output='screen',
         parameters=[{
-            "depth_ns":          "/camera/depth",
-            "color_ns":          "/camera/color",
-            "depth_scale":       0.001,   # D435i Z16 default (mm -> m)
-            "min_depth_m":       0.1,
-            "max_depth_m":       10.0,
-            "detections_topic":  LaunchConfiguration("detections_topic"),
-            "network_width":     LaunchConfiguration("network_width"),
-            "network_height":    LaunchConfiguration("network_height"),
-            "color_width":       LaunchConfiguration("color_width"),
-            "color_height":      LaunchConfiguration("color_height"),
+            'depth_ns':          '/camera/depth',
+            'color_ns':          '/camera/color',
+            'depth_scale':       0.001,   # D435i Z16 default (mm -> m)
+            'min_depth_m':       0.1,
+            'max_depth_m':       10.0,
+            'detections_topic':  LaunchConfiguration('detections_topic'),
+            'network_width':     LaunchConfiguration('network_width'),
+            'network_height':    LaunchConfiguration('network_height'),
+            'color_width':       LaunchConfiguration('color_width'),
+            'color_height':      LaunchConfiguration('color_height'),
         }],
     )
 
