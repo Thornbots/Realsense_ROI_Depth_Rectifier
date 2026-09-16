@@ -19,8 +19,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-detection_picker_visualizer.py
-
 Diagnostic overlay for detection_picker_node (roi_depth_query::DetectionRoiRelayNode).
 
 Derived from NVIDIA's isaac_ros_yolov8_visualizer.py, with three changes:
@@ -52,13 +50,14 @@ The node mirrors detection_picker_node's parameters so the overlay reflects the
 live picker configuration. Keep these in sync with the launch file.
 """
 
+import math
+
 import cv2
 import cv_bridge
-import math
 import message_filters
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy, QoSDurabilityPolicy
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2DArray
 
@@ -85,7 +84,8 @@ NAMES = {
 
 
 def _sensor_data_qos(depth=5):
-    """Best-effort / volatile / keep-last QoS.
+    """
+    Best-effort / volatile / keep-last QoS.
 
     Equivalent to rclcpp::SensorDataQoS(), which is what the RealSense driver,
     the NITROS image streams, and dji_serial_bridge_node's ~/ref_sys all use.
@@ -141,7 +141,7 @@ class DetectionPickerVisualizer(Node):
         self.min_score = float(gp('min_score').value)
         self.center_weight = float(gp('center_weight').value)
         self.priority_class_bonus = float(gp('priority_class_bonus').value)
-        self.priority_class_ids = set(int(c) for c in gp('priority_class_ids').value)
+        self.priority_class_ids = {int(c) for c in gp('priority_class_ids').value}
         self.is_blue_team = bool(gp('is_blue_fallback').value)
         use_approx = bool(gp('use_approx_sync').value)
         slop = float(gp('sync_slop').value)
@@ -178,18 +178,18 @@ class DetectionPickerVisualizer(Node):
                 _sensor_data_qos())
         else:
             self.get_logger().warn(
-                "dji_serial_bridge.msg.RefSysStatus not importable -- team "
-                "exclusion will not be shown (all classes treated as eligible).")
+                'dji_serial_bridge.msg.RefSysStatus not importable -- team '
+                'exclusion will not be shown (all classes treated as eligible).')
 
         self.get_logger().info(
-            f"detection_picker_visualizer ready\n"
-            f"  detections: {detections_topic}  image: {image_topic}\n"
-            f"  -> {output_topic}\n"
-            f"  network {self.network_w}x{self.network_h}  min_score={self.min_score}\n"
-            f"  score = conf + {self.center_weight}*centrality + "
-            f"{self.priority_class_bonus} if class in "
-            f"{sorted(self.priority_class_ids)}\n"
-            f"  team source: {self.ref_sys_topic}  "
+            f'detection_picker_visualizer ready\n'
+            f'  detections: {detections_topic}  image: {image_topic}\n'
+            f'  -> {output_topic}\n'
+            f'  network {self.network_w}x{self.network_h}  min_score={self.min_score}\n'
+            f'  score = conf + {self.center_weight}*centrality + '
+            f'{self.priority_class_bonus} if class in '
+            f'{sorted(self.priority_class_ids)}\n'
+            f'  team source: {self.ref_sys_topic}  '
             f"sync: {'approx(%.3fs)' % slop if use_approx else 'exact'}")
 
     # ── referee status callback (mirror of C++ onRefSysStatus) ───────────────
@@ -203,7 +203,8 @@ class DetectionPickerVisualizer(Node):
 
     # ── picker logic, replicated 1:1 from detection_picker_node.cpp ──────────
     def _top_hypothesis(self, detection):
-        """Return (class_id:int, confidence:float) of the highest-score hyp.
+        """
+        Return (class_id:int, confidence:float) of the highest-score hyp.
 
         Mirrors topClassId(): the class id is read from the highest-scoring
         hypothesis. class_id is a decimal string in Isaac ROS; -1 on failure.
@@ -291,15 +292,15 @@ class DetectionPickerVisualizer(Node):
 
             name = NAMES.get(info['class_id'], f"id{info['class_id']}")
             lines = [
-                f"#{i} {name}" + ("  <PICK>" if i == best_idx else ""),
+                f'#{i} {name}' + ('  <PICK>' if i == best_idx else ''),
                 f"conf {info['conf']:.2f}  cen {info['centrality']:.2f}",
                 f"score {info['score']:.2f}"
-                + ("  +prio" if info['is_prio'] else ""),
+                + ('  +prio' if info['is_prio'] else ''),
             ]
             if info['excluded']:
-                lines.append("EXCLUDED: ally")
+                lines.append('EXCLUDED: ally')
             elif not info['eligible']:
-                lines.append(f"< min_score {self.min_score:.2f}")
+                lines.append(f'< min_score {self.min_score:.2f}')
 
             self._draw_label(cv2_img, lines, min_pt, max_pt,
                              color, font_scale, tf)
@@ -309,7 +310,8 @@ class DetectionPickerVisualizer(Node):
         self._pub.publish(processed)
 
     def _draw_label(self, img, lines, min_pt, max_pt, accent, font_scale, tf):
-        """Draw a multi-line label block with a filled background for legibility.
+        """
+        Draw a multi-line label block with a filled background for legibility.
 
         Placed above the box if there is room, otherwise below it.
         """

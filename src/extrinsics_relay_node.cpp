@@ -1,3 +1,17 @@
+// Copyright 2026 Thornbots
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // extrinsics_relay_node.cpp
 //
 // One-shot node: subscribes to the realsense extrinsics topic and on first
@@ -21,73 +35,83 @@
 #include <realsense2_camera_msgs/msg/extrinsics.hpp>
 #include <rcl_interfaces/srv/set_parameters.hpp>
 
-int main(int argc, char **argv)
+int main(int argc, char ** argv)
 {
-    rclcpp::init(argc, argv);
-    auto node = rclcpp::Node::make_shared("extrinsics_relay");
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("extrinsics_relay");
 
-    // Default topic matches observed realsense-ros behaviour with namespace=''
-    std::string extr_topic = node->declare_parameter<std::string>(
-        "extrinsics_topic", "/extrinsics/depth_to_color");
-    std::string target_node = node->declare_parameter<std::string>(
-        "target_node", "/roi_depth_node");
+  // Default topic matches observed realsense-ros behaviour with namespace=''
+  std::string extr_topic = node->declare_parameter<std::string>(
+    "extrinsics_topic", "/extrinsics/depth_to_color");
+  std::string target_node = node->declare_parameter<std::string>(
+    "target_node", "/roi_depth_node");
 
-    RCLCPP_INFO(node->get_logger(),
-        "Waiting for extrinsics on '%s' (volatile QoS) …", extr_topic.c_str());
+  RCLCPP_INFO(
+    node->get_logger(),
+    "Waiting for extrinsics on '%s' (volatile QoS) …", extr_topic.c_str());
 
-    auto client = node->create_client<rcl_interfaces::srv::SetParameters>(
-        target_node + "/set_parameters");
+  auto client = node->create_client<rcl_interfaces::srv::SetParameters>(
+    target_node + "/set_parameters");
 
-    bool done = false;
-    rclcpp::Subscription<realsense2_camera_msgs::msg::Extrinsics>::SharedPtr sub;
+  // Sets roi_depth_node's extrinsics params from msg, then shuts down.
+  // No early returns: ament's uncrustify config deletes `return;` in lambdas.
+  auto forward_extrinsics = [&](const realsense2_camera_msgs::msg::Extrinsics & msg)
+    {
+      RCLCPP_INFO(
+        node->get_logger(),
+        "Extrinsics received — forwarding to %s", target_node.c_str());
 
-    // Use default (volatile) QoS — must match the realsense publisher.
-    // DO NOT use .transient_local() here: realsense-ros uses volatile durability,
-    // and a transient_local subscriber paired with a volatile publisher will
-    // never receive a single message.
-    sub = node->create_subscription<realsense2_camera_msgs::msg::Extrinsics>(
-        extr_topic, rclcpp::QoS(1),
-        [&](realsense2_camera_msgs::msg::Extrinsics::ConstSharedPtr msg)
-        {
-            if (done) return;
-            done = true;
+      auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
 
-            RCLCPP_INFO(node->get_logger(),
-                "Extrinsics received — forwarding to %s", target_node.c_str());
+      rcl_interfaces::msg::Parameter rot_param;
+      rot_param.name = "extrinsics.rotation";
+      rot_param.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY;
+      for (float v : msg.rotation) {
+        rot_param.value.double_array_value.push_back(static_cast<double>(v));
+      }
+      req->parameters.push_back(rot_param);
 
-            if (!client->wait_for_service(std::chrono::seconds(5)))
-            {
-                RCLCPP_ERROR(node->get_logger(),
-                    "Parameter service on %s not available after 5 s — "
-                    "is roi_depth_node running?", target_node.c_str());
-                rclcpp::shutdown();
-                return;
-            }
+      rcl_interfaces::msg::Parameter trans_param;
+      trans_param.name = "extrinsics.translation";
+      trans_param.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY;
+      for (float v : msg.translation) {
+        trans_param.value.double_array_value.push_back(static_cast<double>(v));
+      }
+      req->parameters.push_back(trans_param);
 
-            auto req = std::make_shared<rcl_interfaces::srv::SetParameters::Request>();
+      if (client->wait_for_service(std::chrono::seconds(5))) {
+        client->async_send_request(
+          req,
+          [node](rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedFuture)
+          {
+            RCLCPP_INFO(node->get_logger(), "Extrinsics forwarded — shutting down.");
+            rclcpp::shutdown();
+          });
+      } else {
+        RCLCPP_ERROR(
+          node->get_logger(),
+          "Parameter service on %s not available after 5 s — "
+          "is roi_depth_node running?", target_node.c_str());
+        rclcpp::shutdown();
+      }
+    };
 
-            rcl_interfaces::msg::Parameter rot_param;
-            rot_param.name = "extrinsics.rotation";
-            rot_param.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY;
-            for (float v : msg->rotation)
-                rot_param.value.double_array_value.push_back(static_cast<double>(v));
-            req->parameters.push_back(rot_param);
+  bool done = false;
+  rclcpp::Subscription<realsense2_camera_msgs::msg::Extrinsics>::SharedPtr sub;
+  // Use default (volatile) QoS — must match the realsense publisher.
+  // DO NOT use .transient_local() here: realsense-ros uses volatile durability,
+  // and a transient_local subscriber paired with a volatile publisher will
+  // never receive a single message.
+  sub = node->create_subscription<realsense2_camera_msgs::msg::Extrinsics>(
+    extr_topic, rclcpp::QoS(1),
+    [&](realsense2_camera_msgs::msg::Extrinsics::ConstSharedPtr msg)
+    {
+      if (!done) {
+        done = true;
+        forward_extrinsics(*msg);
+      }
+    });
 
-            rcl_interfaces::msg::Parameter trans_param;
-            trans_param.name = "extrinsics.translation";
-            trans_param.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY;
-            for (float v : msg->translation)
-                trans_param.value.double_array_value.push_back(static_cast<double>(v));
-            req->parameters.push_back(trans_param);
-
-            client->async_send_request(req,
-                [node](rclcpp::Client<rcl_interfaces::srv::SetParameters>::SharedFuture)
-                {
-                    RCLCPP_INFO(node->get_logger(), "Extrinsics forwarded — shutting down.");
-                    rclcpp::shutdown();
-                });
-        });
-
-    rclcpp::spin(node);
-    return 0;
+  rclcpp::spin(node);
+  return 0;
 }
