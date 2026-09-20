@@ -26,3 +26,10 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
   and gets scaled to color space here. Getting either convention wrong produces
   plausible-looking numbers aimed the wrong way, not an error.
 - Its own git repo (`Thornbots/Realsense_ROI_Depth_Rectifier`).
+
+## Committing
+
+This package is a submodule of `thornbots_workspace`, on branch `main`. Commit
+and push here first, then bump this gitlink in `../` — one logical change, one
+bump, never a gitlink pointing at an unpushed commit. Full rule in
+`../CLAUDE.md` § Packages.
