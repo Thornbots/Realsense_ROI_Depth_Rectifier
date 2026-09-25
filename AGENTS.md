@@ -27,6 +27,11 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
   plausible-looking numbers aimed the wrong way, not an error.
 - Its own git repo (`Thornbots/Realsense_ROI_Depth_Rectifier`).
 
+## Open
+
+- **Jazzy: `cv_bridge/cv_bridge.h` to `.hpp` in `roi_depth_node.cpp`.**
+  `../JAZZY_PLAN.md`.
+
 ## Committing
 
 This package is a submodule of `thornbots_workspace`, on branch `main`. Commit
