@@ -9,7 +9,7 @@ using an Intel RealSense camera, without running `rs2::align` on the full frame.
 /detections_output (Detection2DArray, network space, ALL detections)
         │
         ▼
-  roi_depth_node   ← scales bbox network->color, samples depth LUT,
+  roi_depth_node   ← maps bbox network->color, samples depth LUT,
                       deprojects bbox centre + 4 corners, per detection
         │
         └──▶  /cv/panel_detections  (dji_serial_bridge/msg/PanelDetectionArray)
@@ -58,6 +58,25 @@ ros.z = -rs.y   (up)
 No external FOV parameters are needed; everything comes from the live
 `/camera/color/camera_info` stream.
 
+### Network space to colour space
+
+The DNN image encoder letterboxes the colour image into the network input:
+one scale for both axes, then zero padding split evenly. For 640x480 into
+640x640 the scale is 1 and there are 80 black rows above and below the
+picture. Isaac ROS 3.2 (`ResizeNode` with `keep_aspect_ratio`, the
+`dnn_image_encoder.launch.py` default) and 4.6 (`DnnImageEncoderNode`)
+both do this. So `roi_depth_node` subtracts the padding and divides by the
+scale:
+
+```
+color_x = (net_x - pad_x) * color_w / resized_w
+color_y = (net_y - pad_y) * color_h / resized_h
+```
+
+Before 2026-09-26 the node stretched instead (`color_y = net_y * 0.75`),
+which is right only at the image centre row. At the top and bottom of the
+picture it was off by 60 px, and every box came out 25% too short.
+
 ## Parameters (`roi_depth_node`)
 
 | Parameter | Default | Description |
@@ -72,8 +91,8 @@ No external FOV parameters are needed; everything comes from the live
 | `depth_max_age_s` | `0.05` | Max `|detection_stamp - depth_stamp|` before a detection is dropped instead of paired with stale/future depth |
 | `max_detections` | `16` | Cap on detections processed per `/detections_output` callback |
 | `detections_topic` | `/detections_output` | Driving input (Detection2DArray, network space) |
-| `network_width`/`network_height` | `640`/`640` | TensorRT input size, for bbox scaling |
-| `color_width`/`color_height` | `640`/`480` | Color stream size, for bbox scaling |
+| `network_width`/`network_height` | `640`/`640` | TensorRT input size, for undoing the letterbox |
+| `color_width`/`color_height` | `640`/`480` | Color stream size, for undoing the letterbox |
 
 ## Build
 
