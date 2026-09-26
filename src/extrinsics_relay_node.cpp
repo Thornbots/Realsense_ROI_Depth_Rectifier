@@ -18,18 +18,14 @@
 // receipt sets extrinsics.rotation / extrinsics.translation parameters on
 // roi_depth_node via the ROS 2 parameter service, then exits.
 //
-// QoS note:
-//   realsense-ros publishes the extrinsics topic with VOLATILE durability
-//   (the ROS default). A TRANSIENT_LOCAL subscriber is incompatible with a
-//   VOLATILE publisher in DDS — no messages will ever be delivered across
-//   that pairing regardless of history depth. This node therefore uses the
-//   default (volatile) QoS to match the publisher.
+// QoS: realsense-ros 4.56 publishes the extrinsics once, latched
+// (reliable, TRANSIENT_LOCAL), so this node subscribes TRANSIENT_LOCAL to
+// get the sample whenever it starts. realsense-ros 4.51.1-isaac (Humble)
+// republished it VOLATILE under IPC, which this subscriber would not match.
 //
-// Topic note:
-//   With ComposableNode(name='camera', namespace=''), realsense-ros resolves
-//   all relative topic names against namespace '' (root). The extrinsics
-//   topic is therefore at /extrinsics/depth_to_color, NOT at
-//   /camera/camera/extrinsics/depth_to_color.
+// Topic: default /extrinsics/depth_to_color, where
+// isaac_ros_yolov8_realsense.launch.py remaps it. realsense-ros itself
+// publishes ~/extrinsics/depth_to_color (/<ns>/<camera_name>/...).
 
 #include <rclcpp/rclcpp.hpp>
 #include <realsense2_camera_msgs/msg/extrinsics.hpp>
@@ -40,7 +36,6 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = rclcpp::Node::make_shared("extrinsics_relay");
 
-  // Default topic matches observed realsense-ros behaviour with namespace=''
   std::string extr_topic = node->declare_parameter<std::string>(
     "extrinsics_topic", "/extrinsics/depth_to_color");
   std::string target_node = node->declare_parameter<std::string>(
@@ -48,7 +43,7 @@ int main(int argc, char ** argv)
 
   RCLCPP_INFO(
     node->get_logger(),
-    "Waiting for extrinsics on '%s' (volatile QoS) …", extr_topic.c_str());
+    "Waiting for extrinsics on '%s' (transient_local QoS) …", extr_topic.c_str());
 
   auto client = node->create_client<rcl_interfaces::srv::SetParameters>(
     target_node + "/set_parameters");
@@ -98,12 +93,9 @@ int main(int argc, char ** argv)
 
   bool done = false;
   rclcpp::Subscription<realsense2_camera_msgs::msg::Extrinsics>::SharedPtr sub;
-  // Use default (volatile) QoS — must match the realsense publisher.
-  // DO NOT use .transient_local() here: realsense-ros uses volatile durability,
-  // and a transient_local subscriber paired with a volatile publisher will
-  // never receive a single message.
+  // Latched publisher: see the QoS note at the top of this file.
   sub = node->create_subscription<realsense2_camera_msgs::msg::Extrinsics>(
-    extr_topic, rclcpp::QoS(1),
+    extr_topic, rclcpp::QoS(1).reliable().transient_local(),
     [&](realsense2_camera_msgs::msg::Extrinsics::ConstSharedPtr msg)
     {
       if (!done) {

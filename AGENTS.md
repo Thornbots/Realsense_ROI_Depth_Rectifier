@@ -29,8 +29,10 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 ## Open
 
-- **Jazzy: `cv_bridge/cv_bridge.h` to `.hpp` in `roi_depth_node.cpp`.**
-  `../JAZZY_PLAN.md`.
+- **Jazzy branch (`jazzy`)** builds and passes lint on `ros:jazzy`. It
+  targets realsense-ros 4.56+: node-private topics (`~/color/...`) and a
+  latched extrinsics topic, which `extrinsics_relay_node` now subscribes to
+  TRANSIENT_LOCAL. Not yet run against a camera. `../JAZZY_PLAN.md`.
 
 ## Committing
 
