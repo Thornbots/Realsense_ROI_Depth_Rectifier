@@ -39,8 +39,9 @@
 //   max_detections (int, default 16):
 //     Cap on detections processed per callback (bounds worst-case CPU).
 //   network_width/height, color_width/height (int):
-//     Bbox scaling from network (TensorRT input) space to color image
-//     space -- moved in from the departing detection_picker_node.
+//     Undo the DNN encoder's letterbox (uniform scale, centred zero
+//     padding; Isaac ROS 3.2 and 4.6 both do this) to map bboxes from
+//     network (TensorRT input) space to color image space.
 //
 // Topics consumed:
 //   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1, cached only)
@@ -55,7 +56,8 @@
 //     order. Corner order per entry: TL,TR,BR,BL. Units: metres.
 //
 // Method (per detection):
-//   1. Scale bbox from network space to color space (color_w/network_w).
+//   1. Map bbox from network space to color space: subtract the letterbox
+//      padding, then divide by the uniform resize scale.
 //   2. Mean depth is sampled over the inner center_sample_fraction of the
 //      bbox using the prebuilt color->depth pixel LUT (no full-frame align).
 //   3. The bbox centre and its 4 corners are deprojected at that same depth
@@ -117,8 +119,17 @@ public:
     network_h_ = declare_parameter<int>("network_height", 640);
     color_w_ = declare_parameter<int>("color_width", 640);
     color_h_ = declare_parameter<int>("color_height", 480);
-    scale_x_ = static_cast<double>(color_w_) / static_cast<double>(network_w_);
-    scale_y_ = static_cast<double>(color_h_) / static_cast<double>(network_h_);
+    // Same arithmetic as DnnImageEncoderNode: one scale for both axes,
+    // truncated resize size, padding split evenly (640x480 -> 640x640 puts
+    // 80 rows above and below).
+    const double s = std::min(
+      static_cast<double>(network_w_) / color_w_, static_cast<double>(network_h_) / color_h_);
+    const int resized_w = static_cast<int>(color_w_ * s);
+    const int resized_h = static_cast<int>(color_h_ * s);
+    pad_x_ = (network_w_ - resized_w) / 2;
+    pad_y_ = (network_h_ - resized_h) / 2;
+    scale_x_ = static_cast<double>(color_w_) / resized_w;
+    scale_y_ = static_cast<double>(color_h_) / resized_h;
 
     // ── subscriptions ────────────────────────────────────────────────────
     depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -197,11 +208,11 @@ public:
       get_logger(),
       "roi_depth_node ready | depth_ns=%s color_ns=%s | detections=%s\n"
       "  output_frame_id=%s | center_sample_fraction=%.2f | depth_max_age_s=%.3f\n"
-      "  network %dx%d -> color %dx%d (scale x=%.4f y=%.4f) | max_detections=%d\n"
+      "  network %dx%d -> color %dx%d (pad x=%d y=%d, scale x=%.4f y=%.4f) | max_detections=%d\n"
       "  publishes: /cv/panel_detections (dji_serial_bridge/msg/PanelDetectionArray, ROS REP-103)",
       depth_ns_.c_str(), color_ns_.c_str(), detections_topic_.c_str(),
       output_frame_id_.c_str(), center_sample_fraction_, depth_max_age_s_,
-      network_w_, network_h_, color_w_, color_h_, scale_x_, scale_y_,
+      network_w_, network_h_, color_w_, color_h_, pad_x_, pad_y_, scale_x_, scale_y_,
       max_detections_);
   }
 
@@ -252,7 +263,8 @@ private:
   double depth_max_age_s_;
   int max_detections_;
   int network_w_, network_h_, color_w_, color_h_;
-  double scale_x_, scale_y_;
+  int pad_x_, pad_y_;          // letterbox padding, network px
+  double scale_x_, scale_y_;   // color px per network px
 
   // Returns true if two rs2_intrinsics represent the same camera model
   // (same resolution, focal length, principal point, and distortion).
@@ -342,8 +354,8 @@ private:
   deprojectDetection(const vision_msgs::msg::Detection2D & det, const cv::Mat & D)
   {
     const auto & bbox = det.bbox;
-    const float cx = static_cast<float>(bbox.center.position.x) * static_cast<float>(scale_x_);
-    const float cy = static_cast<float>(bbox.center.position.y) * static_cast<float>(scale_y_);
+    const float cx = static_cast<float>((bbox.center.position.x - pad_x_) * scale_x_);
+    const float cy = static_cast<float>((bbox.center.position.y - pad_y_) * scale_y_);
     const double half_w = (bbox.size_x * scale_x_) / 2.0;
     const double half_h = (bbox.size_y * scale_y_) / 2.0;
 
