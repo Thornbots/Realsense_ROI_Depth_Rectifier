@@ -68,7 +68,6 @@
 //        ros.y = -rs.x   (left)
 //        ros.z = -rs.y   (up)
 
-#include <cv_bridge/cv_bridge.h>
 #include <librealsense2/rsutil.h>
 
 #include <algorithm>
@@ -78,6 +77,7 @@
 #include <optional>
 #include <vector>
 
+#include <cv_bridge/cv_bridge.hpp>
 #include <dji_serial_bridge/msg/panel_detection.hpp>
 #include <dji_serial_bridge/msg/panel_detection_array.hpp>
 #include <geometry_msgs/msg/point32.hpp>

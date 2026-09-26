@@ -41,10 +41,9 @@ Derived from NVIDIA's isaac_ros_yolov8_visualizer.py, with three changes:
 
 Coordinate space:
   /detections_output bboxes are in NETWORK space (network_w x network_h, e.g.
-  640x640). The only published frame in that space is the DNN encoder's resize
-  output (/yolov8_encoder/resize/image), so we overlay on that. This is the
-  same space the picker scores in, BEFORE it scales the winner to color space
-  for /roi -- which is exactly the decision we want to inspect here.
+  640x640). Isaac ROS 4.x's DnnImageEncoderNode publishes no image, so this
+  node letterboxes the colour image (image_topic) into network space the way
+  the encoder does (uniform scale, centred zero padding) and overlays on that.
 
 The node mirrors detection_picker_node's parameters so the overlay reflects the
 live picker configuration. Keep these in sync with the launch file.
@@ -101,7 +100,7 @@ def _sensor_data_qos(depth=5):
 
 
 class DetectionPickerVisualizer(Node):
-    # colours are RGB tuples (the resize image is rgb8, so viewers read them
+    # colours are RGB tuples (the RealSense colour image is rgb8, so viewers read them
     # as RGB -- no BGR swap needed).
     COLOR_PICK = (0, 255, 0)       # green  : the detection the picker chooses
     COLOR_ELIGIBLE = (255, 215, 0)  # amber  : passed filters, but not the best
@@ -115,7 +114,7 @@ class DetectionPickerVisualizer(Node):
 
         # ── parameters (mirror detection_picker_node) ────────────────────────
         self.declare_parameter('detections_topic', '/detections_output')
-        self.declare_parameter('image_topic', '/yolov8_encoder/resize/image')
+        self.declare_parameter('image_topic', '/color/image_raw')
         self.declare_parameter('output_topic', 'yolov8_processed_image')
         self.declare_parameter('ref_sys_topic', '/dji_serial_bridge/ref_sys')
         self.declare_parameter('network_width', 640)
@@ -235,10 +234,22 @@ class DetectionPickerVisualizer(Node):
         return min(max(c, 0.0), 1.0)
 
     # ── main callback ────────────────────────────────────────────────────────
-    def detections_callback(self, detections_msg, img_msg):
-        cv2_img = self._bridge.imgmsg_to_cv2(img_msg)
+    def _letterbox(self, img):
+        """Resize + centre-pad img to network size, as DnnImageEncoderNode does."""
+        h, w = img.shape[:2]
+        scale = min(self.network_w / w, self.network_h / h)
+        rw, rh = int(w * scale), int(h * scale)
+        top = (self.network_h - rh) // 2
+        left = (self.network_w - rw) // 2
+        img = cv2.resize(img, (rw, rh), interpolation=cv2.INTER_LINEAR)
+        return cv2.copyMakeBorder(
+            img, top, self.network_h - rh - top, left, self.network_w - rw - left,
+            cv2.BORDER_CONSTANT, value=0)
 
-        lw = max(round((img_msg.height + img_msg.width) / 2 * 0.003), 2)
+    def detections_callback(self, detections_msg, img_msg):
+        cv2_img = self._letterbox(self._bridge.imgmsg_to_cv2(img_msg))
+
+        lw = max(round((self.network_h + self.network_w) / 2 * 0.003), 2)
         tf = max(lw - 1, 1)
         font_scale = lw / 3.0
 
