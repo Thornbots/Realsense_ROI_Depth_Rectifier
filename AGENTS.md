@@ -29,8 +29,8 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 ## Open
 
-- **Jazzy: `cv_bridge/cv_bridge.h` to `.hpp` in `roi_depth_node.cpp`.**
-  `../JAZZY_PLAN.md`.
+- **Jazzy:** ported on this repo's `jazzy` branch; its `AGENTS.md` has the
+  state. Commit Humble work here until the cutover.
 
 ## Committing
 
