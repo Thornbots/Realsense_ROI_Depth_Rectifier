@@ -29,10 +29,11 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 ## Open
 
-- **Jazzy branch (`jazzy`)** builds and passes lint on `ros:jazzy`. It
-  targets realsense-ros 4.56+: node-private topics (`~/color/...`) and a
-  latched extrinsics topic, which `extrinsics_relay_node` now subscribes to
-  TRANSIENT_LOCAL. Not yet run against a camera. `../JAZZY_PLAN.md`.
+- **Jazzy (this branch)** builds clean and passes its tests in the Isaac
+  ROS 4.6 container. It targets realsense-ros 4.56+: node-private topics
+  (`~/color/...`) and a latched extrinsics topic, which
+  `extrinsics_relay_node` subscribes to TRANSIENT_LOCAL. Not yet run against
+  a camera (`../JAZZY_PLAN.md` step 5).
 
 ## Committing
 
