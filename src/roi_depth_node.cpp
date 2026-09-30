@@ -75,6 +75,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -188,12 +190,14 @@ public:
         }
       });
 
-    // Depth is now a cached resource only -- detections drive output.
+    // Depth is a cached resource only -- detections drive output. The last
+    // few frames are kept, since a detection arrives after later frames have.
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
       depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::Image::ConstSharedPtr m) {
         std::lock_guard lk(depth_mutex_);
-        latest_depth_ = m;
+        recent_depth_.push_back(m);
+        if (recent_depth_.size() > kDepthHistory) {recent_depth_.pop_front();}
       });
 
     detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
@@ -249,8 +253,9 @@ private:
   // on the message itself.
   rs2_intrinsics lut_depth_intr_{}, lut_color_intr_{};
 
+  static constexpr size_t kDepthHistory = 8;  // ~130 ms at 60 Hz
   std::mutex depth_mutex_;
-  sensor_msgs::msg::Image::ConstSharedPtr latest_depth_;
+  std::deque<sensor_msgs::msg::Image::ConstSharedPtr> recent_depth_;
 
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_, color_info_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
@@ -438,15 +443,20 @@ private:
   {
     {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
 
-    sensor_msgs::msg::Image::ConstSharedPtr depth_msg;
-    {std::lock_guard lk(depth_mutex_); depth_msg = latest_depth_;}
-    if (!depth_msg) {return;}
-
-    // depth_max_age_s_ gates a stalled depth stream from pairing with
-    // a fresh detection -- either side may lead, so compare |Δt|.
+    // The depth frame nearest the detection's stamp: pairing with the newest
+    // read a later frame, after the panel and the head had moved (sim E1,
+    // 2026-09-29). depth_max_age_s_ still gates a stalled depth stream.
     rclcpp::Time det_t(det_msg->header.stamp, RCL_ROS_TIME);
-    rclcpp::Time depth_t(depth_msg->header.stamp, RCL_ROS_TIME);
-    double age = std::abs((det_t - depth_t).seconds());
+    sensor_msgs::msg::Image::ConstSharedPtr depth_msg;
+    double age = std::numeric_limits<double>::infinity();
+    {
+      std::lock_guard lk(depth_mutex_);
+      for (const auto & m : recent_depth_) {
+        const double d = std::abs((det_t - rclcpp::Time(m->header.stamp, RCL_ROS_TIME)).seconds());
+        if (d < age) {age = d; depth_msg = m;}
+      }
+    }
+    if (!depth_msg) {return;}
     if (age > depth_max_age_s_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
