@@ -25,6 +25,7 @@ find_package(dji_serial_bridge REQUIRED)
 
 # ── roi_depth_node (composable) ──────────────────────────────────────────────
 add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
+target_include_directories(roi_depth_node PRIVATE src)
 ament_target_dependencies(roi_depth_node
   rclcpp rclcpp_components
   sensor_msgs geometry_msgs vision_msgs
@@ -65,6 +66,10 @@ install(PROGRAMS
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_stamp_diff test/test_stamp_diff.cpp)
+  target_include_directories(test_stamp_diff PRIVATE src)
+  ament_target_dependencies(test_stamp_diff rclcpp)
 endif()
 
 ament_package()
