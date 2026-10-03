@@ -19,7 +19,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Diagnostic overlay for detection_picker_node (roi_depth_query::DetectionRoiRelayNode).
+Bench overlay replicating the removed detection_picker_node's 2D picking.
 
 Derived from NVIDIA's isaac_ros_yolov8_visualizer.py, with three changes:
 
@@ -45,8 +45,9 @@ Coordinate space:
   node letterboxes the colour image (image_topic) into network space the way
   the encoder does (uniform scale, centred zero padding) and overlays on that.
 
-The node mirrors detection_picker_node's parameters so the overlay reflects the
-live picker configuration. Keep these in sync with the launch file.
+The parameters mirror the removed detection_picker_node (target_selector.py now
+picks in 3D, after depth), so the overlay approximates the live pick. Keep them
+in sync with the launch file.
 """
 
 import math
@@ -112,7 +113,7 @@ class DetectionPickerVisualizer(Node):
     def __init__(self):
         super().__init__('detection_picker_visualizer')
 
-        # ── parameters (mirror detection_picker_node) ────────────────────────
+        # ── parameters (mirror the removed detection_picker_node) ────────────────────────
         self.declare_parameter('detections_topic', '/detections_output')
         self.declare_parameter('image_topic', '/color/image_raw')
         self.declare_parameter('output_topic', 'yolov8_processed_image')
@@ -200,7 +201,7 @@ class DetectionPickerVisualizer(Node):
                 f"(excluding class IDs {'0-3' if new_val else '4-7'})")
         self.is_blue_team = new_val
 
-    # ── picker logic, replicated 1:1 from detection_picker_node.cpp ──────────
+    # ── picker logic, replicated 1:1 from the removed detection_picker_node.cpp ──────────
     def _top_hypothesis(self, detection):
         """
         Return (class_id:int, confidence:float) of the highest-score hyp.
