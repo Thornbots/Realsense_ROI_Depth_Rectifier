@@ -56,7 +56,7 @@ ros.z = -rs.y   (up)
 ```
 
 No external FOV parameters are needed; everything comes from the live
-`/camera/color/camera_info` stream.
+color `camera_info` stream (`<color_ns>/camera_info`).
 
 ### Network space to colour space
 
