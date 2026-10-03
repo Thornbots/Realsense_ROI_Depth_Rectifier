@@ -94,6 +94,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+#include "stamp_diff.hpp"
 
 namespace roi_depth_query
 {
@@ -446,13 +447,14 @@ private:
     // The depth frame nearest the detection's stamp: pairing with the newest
     // read a later frame, after the panel and the head had moved (sim E1,
     // 2026-09-29). depth_max_age_s_ still gates a stalled depth stream.
-    rclcpp::Time det_t(det_msg->header.stamp, RCL_ROS_TIME);
+    // Stamps are diffed as int64 ns, never via rclcpp::Time: it throws on a
+    // negative stamp and a wall-clock step can produce one (stamp_diff.hpp).
     sensor_msgs::msg::Image::ConstSharedPtr depth_msg;
     double age = std::numeric_limits<double>::infinity();
     {
       std::lock_guard lk(depth_mutex_);
       for (const auto & m : recent_depth_) {
-        const double d = std::abs((det_t - rclcpp::Time(m->header.stamp, RCL_ROS_TIME)).seconds());
+        const double d = absStampDiffS(det_msg->header.stamp, m->header.stamp);
         if (d < age) {age = d; depth_msg = m;}
       }
     }

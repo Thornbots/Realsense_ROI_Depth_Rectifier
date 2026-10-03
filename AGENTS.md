@@ -41,3 +41,9 @@ This package is a submodule of `thornbots_workspace`, on branch `main`. Commit
 and push here first, then bump this gitlink in `../` — one logical change, one
 bump, never a gitlink pointing at an unpushed commit. Full rule in
 `../CLAUDE.md` § Packages.
+
+## Rules
+
+- Never build an `rclcpp::Time` from a received stamp: it throws on negative
+  sec and a wall-clock step can produce one. Diff stamps with
+  `absStampDiffS` (`src/stamp_diff.hpp`).
