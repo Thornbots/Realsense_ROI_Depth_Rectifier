@@ -47,3 +47,11 @@ bump, never a gitlink pointing at an unpushed commit. Full rule in
 - Never build an `rclcpp::Time` from a received stamp: it throws on negative
   sec and a wall-clock step can produce one. Diff stamps with
   `absStampDiffS` (`src/stamp_diff.hpp`).
+
+## CI
+
+GitHub CI runs on pushes and PRs outside frozen Humble branches. Shared lint
+is pinned to workspace `13d5965558a3`. Existing diagnostics are recorded in
+`.github/quality-baseline.json`; new diagnostics fail. Do not expand the
+baseline to hide regressions. Syntax errors always fail.
+Jazzy CI builds the portable stack and runs this package's registered tests.
