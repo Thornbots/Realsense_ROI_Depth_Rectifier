@@ -13,23 +13,11 @@
 # limitations under the License.
 
 """
-Standalone ROI depth test launch: camera, extrinsics relay, roi_depth_node.
-
-Standalone test/dev launch for this package: starts the D435i driver
-(align_depth disabled), the extrinsics relay (required so roi_depth_node
-can build its colour->depth LUT), and roi_depth_node itself.
-
-roi_depth_node now subscribes /detections_output (Detection2DArray,
-NETWORK image space) directly -- it does the network->color bbox scaling
-internally (network_width/height, color_width/height params below), so
-there is no separate relay node to launch. By default /detections_output
-is expected to come from somewhere else (e.g. a hand-published test
-message, or your own node).
-
-This file does NOT include the YOLOv8/TensorRT inference chain or the
-DJI serial bridge — see realsense_yolov8_nitros_bridge's
-isaac_ros_yolov8_realsense.launch.py for the full production pipeline
-(camera -> inference -> depth -> serial bridge).
+Standalone depth test: D435i, extrinsics relay and roi_depth_node.
+Feed /detections_output (Detection2DArray, network space) separately.
+Depth alignment is off; roi_depth_node maps network boxes to colour space.
+Production uses both the YOLO launch and thornbots_pkg's auto.launch.py.
+See README.md's Launch section for the full robot pipeline recipe.
 """
 
 import os

@@ -109,7 +109,7 @@ source install/setup.bash
 ros2 launch roi_depth_query roi_depth_launch.py
 ```
 
-For the full production pipeline (RealSense → YOLOv8/TensorRT →
-roi_depth_node → `thornbots_pkg`'s `target_selector` → DJI serial bridge), use
-`realsense_yolov8_nitros_bridge`'s `isaac_ros_yolov8_realsense.launch.py`
-instead, which wires `/cv/panel_detections` through to `thornbots_pkg`.
+For production, run the YOLO launch and `thornbots_pkg`'s `auto.launch.py`
+using the [two-terminal recipe](../realsense-yolov8-nitros-bridge/README.md#full-robot-pipeline).
+The YOLO launch supplies detections; `auto.launch.py` owns aiming and the
+serial bridge. Stop the standalone launch above first: both open the camera.
