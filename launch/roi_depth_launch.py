@@ -14,6 +14,7 @@
 
 """
 Standalone depth test: D435i, extrinsics relay and roi_depth_node.
+
 Feed /detections_output (Detection2DArray, network space) separately.
 Depth alignment is off; roi_depth_node maps network boxes to colour space.
 Production uses both the YOLO launch and thornbots_pkg's auto.launch.py.
