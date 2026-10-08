@@ -1,0 +1,3 @@
+{
+  "[\"src/roi_depth_node.cpp\", \"readability/casting\", \"Using deprecated casting style.  Use static_cast<int16_t>(...) instead\"]": 1
+}

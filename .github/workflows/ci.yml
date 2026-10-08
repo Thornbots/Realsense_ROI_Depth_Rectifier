@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, nightly]
+  pull_request:
+    branches: [main, nightly]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    uses: Thornbots/thornbots_workspace/.github/workflows/quality.yml@884bfe63ea4e76af921276a978672fb04e6c3205
+    with:
+      tooling-ref: 884bfe63ea4e76af921276a978672fb04e6c3205
+  ros:
+    uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@58b7bf0d7bd68ea591d5bd30d34177002b9be42a
+    with:
+      package-repo: Realsense_ROI_Depth_Rectifier
+      workspace-ref: 6e8968e07aab9efacb101e86851b656faa63bd90

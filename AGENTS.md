@@ -37,7 +37,7 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 ## Committing
 
-This package is a submodule of `thornbots_workspace`, on branch `main`. Commit
+This package is a submodule of `thornbots_workspace`, on branch `nightly`. Commit
 and push here first, then bump this gitlink in `../` — one logical change, one
 bump, never a gitlink pointing at an unpushed commit. Full rule in
 `../CLAUDE.md` § Packages.
@@ -47,3 +47,11 @@ bump, never a gitlink pointing at an unpushed commit. Full rule in
 - Never build an `rclcpp::Time` from a received stamp: it throws on negative
   sec and a wall-clock step can produce one. Diff stamps with
   `absStampDiffS` (`src/stamp_diff.hpp`).
+
+## CI
+
+GitHub CI runs on PRs targeting main/nightly and pushes to both branches;
+manual runs are available. Shared lint is pinned to workspace `884bfe63ea4e` (tag `ci-tooling-884bfe6`). Existing diagnostics are recorded in
+`.github/quality-baseline.json`; new diagnostics fail. Do not expand the
+baseline to hide regressions. Syntax errors always fail.
+Jazzy CI builds the portable stack and runs this package's registered tests.

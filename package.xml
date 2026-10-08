@@ -22,6 +22,7 @@
   <depend>rclcpp_components</depend>
   <depend>rcl_interfaces</depend>
   <depend>dji_serial_bridge</depend>
+  <depend>librealsense2</depend>
 
   <!-- librealsense2 is a system dependency installed by the realsense2_camera package -->
   <exec_depend>realsense2_camera</exec_depend>
