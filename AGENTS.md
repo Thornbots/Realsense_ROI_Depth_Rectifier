@@ -32,8 +32,8 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 - **Jazzy (`main`)** builds clean and passes its tests in the Isaac
   ROS 4.6 container. It targets realsense-ros 4.56+: node-private topics
   (`~/color/...`) and a latched extrinsics topic, which
-  `extrinsics_relay_node` subscribes to TRANSIENT_LOCAL. Not yet run against
-  a camera (`../JAZZY_PLAN.md` step 5).
+  `extrinsics_relay_node` subscribes to TRANSIENT_LOCAL. Robot validation:
+  [hardware status](../JAZZY_FLASH.md#hardware-status).
 
 ## Committing
 
