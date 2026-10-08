@@ -51,7 +51,7 @@ bump, never a gitlink pointing at an unpushed commit. Full rule in
 ## CI
 
 GitHub CI runs on PRs and main pushes; manual runs are available. Shared lint
-is pinned to workspace `7e6fdb673f7b`. Existing diagnostics are recorded in
+is pinned to workspace `884bfe63ea4e` (tag `ci-tooling-884bfe6`). Existing diagnostics are recorded in
 `.github/quality-baseline.json`; new diagnostics fail. Do not expand the
 baseline to hide regressions. Syntax errors always fail.
 Jazzy CI builds the portable stack and runs this package's registered tests.
