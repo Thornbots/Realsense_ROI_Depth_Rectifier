@@ -20,7 +20,7 @@ publish (depth is a cached resource, matched by stamp within
 `depth_max_age_s`), so output rate/stamps track the detector 1:1 and a
 stalled depth stream can't pair with a fresh detection. There is no
 picking step here. Every detection with valid depth goes out in the
-array. `thornbots_pkg`'s `target_selector.py` (downstream, post-depth) does
+array. `thornbots_pkg`'s `target_selector` (downstream, post-depth) does
 team filtering, 3D robot grouping, and the per-frame panel pick, then
 republishes the winner as a singular `PanelDetection` on
 `/cv/panel_detection`.
@@ -113,3 +113,15 @@ For production, run the YOLO launch and `thornbots_pkg`'s `auto.launch.py`
 using the [two-terminal recipe](../realsense-yolov8-nitros-bridge/README.md#full-robot-pipeline).
 The YOLO launch supplies detections; `auto.launch.py` owns aiming and the
 serial bridge. Stop the standalone launch above first: both open the camera.
+
+For the diagnostic overlay, run `ros2 run roi_depth_query
+detection_picker_visualizer`. It letterboxes `/color/image_raw` into network
+space, synchronizes it with `/detections_output`, and publishes
+`yolov8_processed_image` with confidence, centrality, priority and team factors.
+It preserves the former picker's pixel-space score; the live selector uses 3D
+grouping, so this is an approximation of that decision. Parameters live in
+[the C++ node](src/detection_picker_visualizer.cpp).
+
+`colcon test --packages-select roi_depth_query` includes the timestamp
+synchronizer gtests (exact and approximate matching, strict slop, queue
+eviction and arrival-order ties) and the existing stamp-difference tests.

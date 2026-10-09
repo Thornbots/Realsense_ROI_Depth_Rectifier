@@ -43,10 +43,17 @@ add_executable(extrinsics_relay_node src/extrinsics_relay_node.cpp)
 ament_target_dependencies(extrinsics_relay_node
   rclcpp realsense2_camera_msgs rcl_interfaces)
 
+add_executable(detection_picker_visualizer src/detection_picker_visualizer.cpp)
+ament_target_dependencies(detection_picker_visualizer
+  rclcpp sensor_msgs vision_msgs cv_bridge dji_serial_bridge)
+target_link_libraries(detection_picker_visualizer ${OpenCV_LIBS})
+target_include_directories(detection_picker_visualizer PRIVATE ${OpenCV_INCLUDE_DIRS})
+
 # ── install ──────────────────────────────────────────────────────────────────
 install(TARGETS
     roi_depth_node
     extrinsics_relay_node
+    detection_picker_visualizer
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
@@ -54,13 +61,6 @@ install(TARGETS
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL)
-
-# ── Python diagnostic scripts ──────────────────────────────────────────────
-# detection_picker_visualizer.py: rclpy node, run with
-#   ros2 run roi_depth_query detection_picker_visualizer.py
-install(PROGRAMS
-    scripts/detection_picker_visualizer.py
-  DESTINATION lib/${PROJECT_NAME})
 
 # ── Tests ──────────────────────────────────────────────────────────
 if(BUILD_TESTING)
@@ -70,6 +70,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_stamp_diff test/test_stamp_diff.cpp)
   target_include_directories(test_stamp_diff PRIVATE src)
   ament_target_dependencies(test_stamp_diff rclcpp)
+  ament_add_gtest(test_visualizer_sync test/test_visualizer_sync.cpp)
+  target_include_directories(test_visualizer_sync PRIVATE src)
 endif()
 
 ament_package()

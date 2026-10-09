@@ -19,6 +19,10 @@ so a source change always needs a rebuild; `--symlink-install` won't help.
 
 ## Scope
 
+- The diagnostic overlay is C++ (`detection_picker_visualizer`); only the
+  ROS launch API remains Python. Keep its former pixel-space scoring and
+  Python message_filters timestamp matching behavior during the port.
+
 - Consumes `/detections_output` from `../realsense-yolov8-nitros-bridge` and
   adds depth + bearing. Detection itself belongs upstream there; target
   selection/tracking and the aiming math belong to `../thornbots_pkg`.
