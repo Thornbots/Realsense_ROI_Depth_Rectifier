@@ -42,21 +42,13 @@ TL, TR, BR, BL, and all points assume a planar panel at the single sampled
 depth. Bbox rotation (`theta`) isn't applied, since upstream YOLOv8 boxes
 are axis-aligned.
 
-### Coordinate convention: ROS REP-103
+### Coordinate convention
 
-Each point is in the ROS REP-103 camera body frame: **X forward, Y left, Z
-up**. Internally `rs2_deproject_pixel_to_point` runs at the measured mean
-depth, producing an undistorted point in the librealsense optical frame (X
-right, Y down, Z forward), which is then remapped:
-
-```
-ros.x =  rs.z   (forward)
-ros.y = -rs.x   (left)
-ros.z = -rs.y   (up)
-```
-
-No external FOV parameters are needed; everything comes from the live
-color `camera_info` stream (`<color_ns>/camera_info`).
+Points use [REP 103](https://github.com/ros-infrastructure/rep/blob/master/rep-0103.rst)
+body axes (X forward, Y left, Z up), not its optical axes. `deprojectToRos` in
+[`roi_depth_node.cpp`](src/roi_depth_node.cpp) converts librealsense's optical
+point at the mean depth using the live colour `camera_info`. `output_frame_id`
+names the URDF `camera` link, not realsense-ros's optical frames.
 
 ### Network space to colour space
 
