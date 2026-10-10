@@ -20,6 +20,8 @@ jobs:
     with:
       tooling-ref: 884bfe63ea4e76af921276a978672fb04e6c3205
   ros:
+    # PRs into nightly stay cheap; nightly pushes and PRs into main run this.
+    if: github.event_name != 'pull_request' || github.base_ref != 'nightly'
     uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@58b7bf0d7bd68ea591d5bd30d34177002b9be42a
     with:
       package-repo: Realsense_ROI_Depth_Rectifier
