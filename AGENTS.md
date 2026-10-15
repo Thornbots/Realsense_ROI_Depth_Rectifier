@@ -19,4 +19,4 @@ and [architecture](README.md#architecture) before changing behavior.
 
 ## Open
 
-Robot acceptance remains in [hardware status](../JAZZY_FLASH.md#hardware-status).
+Robot acceptance remains in [hardware status](../docs/JAZZY_FLASH.md#hardware-status).
