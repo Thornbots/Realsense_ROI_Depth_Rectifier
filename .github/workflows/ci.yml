@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, nightly]
+    branches: [main]
   pull_request:
-    branches: [main, nightly]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,11 +16,11 @@ concurrency:
 
 jobs:
   quality:
-    uses: Thornbots/thornbots_workspace/.github/workflows/quality.yml@884bfe63ea4e76af921276a978672fb04e6c3205
+    uses: Thornbots/thornbots_workspace/.github/workflows/quality.yml@1d85c773b3c056b92ab717fba42188db11533717
     with:
-      tooling-ref: 884bfe63ea4e76af921276a978672fb04e6c3205
+      tooling-ref: 1d85c773b3c056b92ab717fba42188db11533717
   ros:
     uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@58b7bf0d7bd68ea591d5bd30d34177002b9be42a
     with:
       package-repo: Realsense_ROI_Depth_Rectifier
-      workspace-ref: 6e8968e07aab9efacb101e86851b656faa63bd90
+      workspace-ref: 601af4ca139df5044327ddd054c33dc919e47120
