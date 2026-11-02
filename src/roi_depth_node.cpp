@@ -445,7 +445,7 @@ private:
     {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
 
     // The depth frame nearest the detection's stamp: pairing with the newest
-    // read a later frame, after the panel and the head had moved (sim E1,
+    // read a later frame, after the panel and the head had moved (sim aim test,
     // 2026-09-29). depth_max_age_s_ still gates a stalled depth stream.
     // Stamps are diffed as int64 ns, never via rclcpp::Time: it throws on a
     // negative stamp and a wall-clock step can produce one (stamp_diff.hpp).
