@@ -64,6 +64,10 @@ install(DIRECTORY launch config
 
 # ── Tests ──────────────────────────────────────────────────────────
 if(BUILD_TESTING)
+  # Model GoogleTest macros explicitly while analyzing every existing source file.
+  find_package(ament_cmake_cppcheck REQUIRED)
+  ament_cppcheck(LIBRARIES googletest INCLUDE_DIRS src)
+  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_cppcheck)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
