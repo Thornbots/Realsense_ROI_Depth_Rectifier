@@ -23,4 +23,4 @@ jobs:
     uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@58b7bf0d7bd68ea591d5bd30d34177002b9be42a
     with:
       package-repo: Realsense_ROI_Depth_Rectifier
-      workspace-ref: dd5adc9abc148e060c98706527d9f40b43f8f5d9
+      workspace-ref: 623955d991e934651a26833b8a4d8005e603bb69
