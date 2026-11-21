@@ -20,7 +20,7 @@ jobs:
     with:
       tooling-ref: 1d85c773b3c056b92ab717fba42188db11533717
   ros:
-    uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@58b7bf0d7bd68ea591d5bd30d34177002b9be42a
+    uses: Thornbots/thornbots_workspace/.github/workflows/ros.yml@83a0e84847a50bcfac59d95719df9aa0037be8cd
     with:
       package-repo: Realsense_ROI_Depth_Rectifier
       workspace-ref: 073cbb7a3606eb2a4ac7a1e249490861707d5652
