@@ -24,7 +24,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(dji_serial_bridge REQUIRED)
 
 # ── roi_depth_node (composable) ──────────────────────────────────────────────
-add_library(roi_depth_node SHARED src/roi_depth_node.cpp)
+add_library(roi_depth_node SHARED src/roi_depth_node.cpp src/plate_pose.cpp)
 target_include_directories(roi_depth_node PRIVATE src)
 ament_target_dependencies(roi_depth_node
   rclcpp rclcpp_components
@@ -76,6 +76,10 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_stamp_diff rclcpp)
   ament_add_gtest(test_visualizer_sync test/test_visualizer_sync.cpp)
   target_include_directories(test_visualizer_sync PRIVATE src)
+  # Pure OpenCV geometry: no rclcpp, no librealsense.
+  ament_add_gtest(test_plate_pose test/test_plate_pose.cpp src/plate_pose.cpp)
+  target_include_directories(test_plate_pose PRIVATE src ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(test_plate_pose ${OpenCV_LIBS})
 endif()
 
 ament_package()

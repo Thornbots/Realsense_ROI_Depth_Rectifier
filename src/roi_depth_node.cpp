@@ -42,12 +42,15 @@
 //     Undo the DNN encoder's letterbox (uniform scale, centred zero
 //     padding; Isaac ROS 3.2 and 4.6 both do this) to map bboxes from
 //     network (TensorRT input) space to color image space.
+//   input_mode ("detections" | "armor_keypoints") and the keypoint pose
+//   parameters: README.md#parameters-roi_depth_node.
 //
 // Topics consumed:
 //   /camera/depth/image_rect_raw   (sensor_msgs/Image, 16UC1, cached only)
 //   /camera/depth/camera_info      (sensor_msgs/CameraInfo)
 //   /camera/color/camera_info      (sensor_msgs/CameraInfo)
 //   /detections_output             (vision_msgs/Detection2DArray, network space)
+//   or /cv/armor_keypoints         (ArmorKeypointsArray) when input_mode=armor_keypoints
 //   extrinsics arrive via parameter push from extrinsics_relay_node
 //
 // Topic published:
@@ -69,6 +72,7 @@
 //        ros.x =  rs.z   (forward)
 //        ros.y = -rs.x   (left)
 //        ros.z = -rs.y   (up)
+//   Keypoint mode replaces 3-4 with a plate pose solve: README.md#keypoint-plate-pose.
 
 #include <librealsense2/rsutil.h>
 
@@ -79,9 +83,12 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <cv_bridge/cv_bridge.hpp>
+#include <dji_serial_bridge/msg/armor_keypoints_array.hpp>
 #include <dji_serial_bridge/msg/panel_detection.hpp>
 #include <dji_serial_bridge/msg/panel_detection_array.hpp>
 #include <geometry_msgs/msg/point32.hpp>
@@ -94,6 +101,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+#include "plate_pose.hpp"
 #include "stamp_diff.hpp"
 
 namespace roi_depth_query
@@ -134,6 +142,22 @@ public:
     scale_x_ = static_cast<double>(color_w_) / resized_w;
     scale_y_ = static_cast<double>(color_h_) / resized_h;
 
+    input_mode_ = declare_parameter<std::string>("input_mode", "detections");
+    if (input_mode_ != "detections" && input_mode_ != "armor_keypoints") {
+      throw std::invalid_argument("input_mode must be 'detections' or 'armor_keypoints'");
+    }
+    keypoints_topic_ = declare_parameter<std::string>("keypoints_topic", "/cv/armor_keypoints");
+    // Defaults mirror config/armor_geometry.yaml; PLACEHOLDER small-armor
+    // values until the new dot-matrix panel CAD exists.
+    geom_.bar_spacing_m = declare_parameter<double>("plate.light_bar_spacing_m", 0.135);
+    geom_.bar_length_m = declare_parameter<double>("plate.light_bar_length_m", 0.055);
+    min_kp_conf_ = declare_parameter<double>("keypoint_min_confidence", 0.5);
+    kp_px_std_ = declare_parameter<double>("keypoint_px_std", 1.0);
+    max_reproj_px_ = declare_parameter<double>("max_reproj_err_px", 3.0);
+    yaw_std_floor_ = declare_parameter<double>("normal_yaw_std_floor_rad", 0.03);
+    depth_noise_base_m_ = declare_parameter<double>("depth_noise_base_m", 0.03);
+    depth_noise_coeff_ = declare_parameter<double>("depth_noise_range_coeff", 0.01);
+
     // ── subscriptions ────────────────────────────────────────────────────
     depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
       depth_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
@@ -149,6 +173,9 @@ public:
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
         std::lock_guard lk(lut_mutex_);
         color_intr_ = cameraInfoToIntrinsics(*m);
+        color_K_ = cv::Matx33d(m->k.data());
+        color_dist_ = m->d.empty() ?
+        cv::Mat::zeros(1, 5, CV_64F) : cv::Mat(m->d, true).reshape(1, 1);
         color_intr_ready_ = true;
         tryBuildLut();
       });
@@ -201,9 +228,15 @@ public:
         if (recent_depth_.size() > kDepthHistory) {recent_depth_.pop_front();}
       });
 
-    detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
-      detections_topic_, 10,
-      std::bind(&RoiDepthNode::onDetections, this, std::placeholders::_1));
+    if (input_mode_ == "armor_keypoints") {
+      keypoints_sub_ = create_subscription<dji_serial_bridge::msg::ArmorKeypointsArray>(
+        keypoints_topic_, 10,
+        std::bind(&RoiDepthNode::onKeypoints, this, std::placeholders::_1));
+    } else {
+      detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
+        detections_topic_, 10,
+        std::bind(&RoiDepthNode::onDetections, this, std::placeholders::_1));
+    }
 
     // ── publisher ────────────────────────────────────────────────────────
     panel_array_pub_ = create_publisher<dji_serial_bridge::msg::PanelDetectionArray>(
@@ -211,14 +244,20 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "roi_depth_node ready | depth_ns=%s color_ns=%s | detections=%s\n"
+      "roi_depth_node ready | depth_ns=%s color_ns=%s | input=%s (%s)\n"
       "  output_frame_id=%s | center_sample_fraction=%.2f | depth_max_age_s=%.3f\n"
       "  network %dx%d -> color %dx%d (pad x=%d y=%d, scale x=%.4f y=%.4f) | max_detections=%d\n"
       "  publishes: /cv/panel_detections (dji_serial_bridge/msg/PanelDetectionArray, ROS REP-103)",
-      depth_ns_.c_str(), color_ns_.c_str(), detections_topic_.c_str(),
+      depth_ns_.c_str(), color_ns_.c_str(), input_mode_.c_str(),
+      (input_mode_ == "armor_keypoints" ? keypoints_topic_ : detections_topic_).c_str(),
       output_frame_id_.c_str(), center_sample_fraction_, depth_max_age_s_,
       network_w_, network_h_, color_w_, color_h_, pad_x_, pad_y_, scale_x_, scale_y_,
       max_detections_);
+    if (input_mode_ == "armor_keypoints") {
+      RCLCPP_INFO(
+        get_logger(), "  plate light bars: spacing %.3f m, length %.3f m (PLACEHOLDER until new "
+        "panel CAD)", geom_.bar_spacing_m, geom_.bar_length_m);
+    }
   }
 
 private:
@@ -261,6 +300,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_, color_info_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
+  rclcpp::Subscription<dji_serial_bridge::msg::ArmorKeypointsArray>::SharedPtr keypoints_sub_;
 
   rclcpp::Publisher<dji_serial_bridge::msg::PanelDetectionArray>::SharedPtr panel_array_pub_;
 
@@ -271,6 +311,13 @@ private:
   int network_w_, network_h_, color_w_, color_h_;
   int pad_x_, pad_y_;          // letterbox padding, network px
   double scale_x_, scale_y_;   // color px per network px
+
+  std::string input_mode_, keypoints_topic_;
+  PlateGeometry geom_{};
+  double min_kp_conf_, kp_px_std_, max_reproj_px_, yaw_std_floor_;
+  double depth_noise_base_m_, depth_noise_coeff_;
+  cv::Matx33d color_K_;   // colour camera_info K/D, for solvePnP (guarded by lut_mutex_)
+  cv::Mat color_dist_;
 
   // Returns true if two rs2_intrinsics represent the same camera model
   // (same resolution, focal length, principal point, and distortion).
@@ -353,18 +400,11 @@ private:
     RCLCPP_INFO(get_logger(), "LUT built: %dx%d entries.", cw, ch);
   }
 
-  // Returns nullopt if depth sampling failed for this bbox (empty
-  // clamped ROI or zero valid depth samples) -- caller skips this
-  // detection rather than aborting the whole batch.
-  std::optional<dji_serial_bridge::msg::PanelDetection>
-  deprojectDetection(const vision_msgs::msg::Detection2D & det, const cv::Mat & D)
+  // Mean depth over the inner center_sample_fraction of a colour-space box;
+  // nullopt for an empty clamped ROI or no valid samples.
+  std::optional<float> sampleDepth(
+    float cx, float cy, double half_w, double half_h, const cv::Mat & D)
   {
-    const auto & bbox = det.bbox;
-    const float cx = static_cast<float>((bbox.center.position.x - pad_x_) * scale_x_);
-    const float cy = static_cast<float>((bbox.center.position.y - pad_y_) * scale_y_);
-    const double half_w = (bbox.size_x * scale_x_) / 2.0;
-    const double half_h = (bbox.size_y * scale_y_) / 2.0;
-
     double frac = std::clamp(center_sample_fraction_, 0.05, 1.0);
     int x0 = static_cast<int>(std::round(cx - half_w * frac));
     int y0 = static_cast<int>(std::round(cy - half_h * frac));
@@ -404,8 +444,26 @@ private:
       }
     }
     if (count == 0) {return std::nullopt;}
+    return static_cast<float>(sum / count);
+  }
 
-    const float mean_depth_m = static_cast<float>(sum / count);
+  static geometry_msgs::msg::Point32 toPoint(const cv::Vec3d & body)
+  {
+    geometry_msgs::msg::Point32 p;
+    p.x = static_cast<float>(body[0]);
+    p.y = static_cast<float>(body[1]);
+    p.z = static_cast<float>(body[2]);
+    return p;
+  }
+
+  // Today's box path: centre + bbox corners deprojected at the sampled depth
+  // (planar, fronto-parallel). Colour-space box; has_normal stays false.
+  std::optional<dji_serial_bridge::msg::PanelDetection>
+  deprojectBox(float cx, float cy, double half_w, double half_h, const cv::Mat & D)
+  {
+    const auto depth = sampleDepth(cx, cy, half_w, half_h, D);
+    if (!depth) {return std::nullopt;}
+    const float mean_depth_m = *depth;
 
     // See file header: optical (X right, Y down, Z forward) -> REP-103
     // camera body frame (X forward, Y left, Z up).
@@ -413,11 +471,7 @@ private:
         float px[2] = {u, v};
         float rs_pt[3];
         rs2_deproject_pixel_to_point(rs_pt, &color_intr_, px, mean_depth_m);
-        geometry_msgs::msg::Point32 p;
-        p.x = rs_pt[2];
-        p.y = -rs_pt[0];
-        p.z = -rs_pt[1];
-        return p;
+        return toPoint(opticalToBody({rs_pt[0], rs_pt[1], rs_pt[2]}));
       };
 
     dji_serial_bridge::msg::PanelDetection msg;
@@ -428,22 +482,110 @@ private:
     msg.center = deprojectToRos(cx, cy);
     msg.depth_m = mean_depth_m;
     msg.robot_track_id = 0;          // ungrouped -- set later by target_selector.py
+    msg.has_normal = false;
+    return msg;
+  }
 
-    msg.confidence = 0.0f;
-    msg.class_id = -1;
+  std::optional<dji_serial_bridge::msg::PanelDetection>
+  deprojectDetection(const vision_msgs::msg::Detection2D & det, const cv::Mat & D)
+  {
+    const auto & bbox = det.bbox;
+    auto msg = deprojectBox(
+      static_cast<float>((bbox.center.position.x - pad_x_) * scale_x_),
+      static_cast<float>((bbox.center.position.y - pad_y_) * scale_y_),
+      (bbox.size_x * scale_x_) / 2.0, (bbox.size_y * scale_y_) / 2.0, D);
+    if (!msg) {return msg;}
+    msg->confidence = 0.0f;
+    msg->class_id = -1;
     for (const auto & hyp : det.results) {
-      if (hyp.hypothesis.score > msg.confidence) {
-        msg.confidence = static_cast<float>(hyp.hypothesis.score);
-        msg.class_id = std::atoi(hyp.hypothesis.class_id.c_str());
+      if (hyp.hypothesis.score > msg->confidence) {
+        msg->confidence = static_cast<float>(hyp.hypothesis.score);
+        msg->class_id = std::atoi(hyp.hypothesis.class_id.c_str());
       }
     }
     return msg;
   }
 
-  void onDetections(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & det_msg)
+  // Keypoint path (README.md#keypoint-plate-pose): IPPE plate pose, range
+  // fused with sampled depth, PnP bearing kept. Any failed check falls back
+  // to deprojectBox with has_normal=false; a pose with no depth goes PnP-only.
+  std::optional<dji_serial_bridge::msg::PanelDetection>
+  deprojectKeypoints(const dji_serial_bridge::msg::ArmorKeypoints & det, const cv::Mat & D)
   {
-    {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
+    const float cx = static_cast<float>((det.center_x - pad_x_) * scale_x_);
+    const float cy = static_cast<float>((det.center_y - pad_y_) * scale_y_);
+    const double half_w = (det.size_x * scale_x_) / 2.0;
+    const double half_h = (det.size_y * scale_y_) / 2.0;
 
+    PlatePose pose;
+    cv::Matx33d K;
+    bool kp_ok = det.has_keypoints;
+    for (const auto & k : det.keypoints) {kp_ok = kp_ok && k.z >= min_kp_conf_;}
+    if (kp_ok) {
+      std::array<cv::Point2d, 4> px;
+      for (int i = 0; i < 4; ++i) {
+        px[i] = {
+          (det.keypoints[i].x - pad_x_) * scale_x_, (det.keypoints[i].y - pad_y_) * scale_y_};
+      }
+      cv::Mat dist;
+      {std::lock_guard lk(lut_mutex_); K = color_K_; dist = color_dist_.clone();}
+      pose = solvePlatePose(px, geom_, K, dist, max_reproj_px_);
+      if (!pose.ok) {
+        RCLCPP_DEBUG(get_logger(), "plate pose rejected: %s", pose.reject.c_str());
+      }
+    }
+
+    std::optional<dji_serial_bridge::msg::PanelDetection> msg;
+    if (!pose.ok) {
+      msg = deprojectBox(cx, cy, half_w, half_h, D);
+    } else {
+      const double z_pnp = pose.t[2];
+      const double f = 0.5 * (K(0, 0) + K(1, 1));
+      const double px_std = kp_px_std_ * 0.5 * (scale_x_ + scale_y_);
+      double z = z_pnp;
+      const auto depth = sampleDepth(cx, cy, half_w, half_h, D);
+      if (depth) {
+        const double sd = depthRangeStd(*depth, depth_noise_base_m_, depth_noise_coeff_);
+        const double sp = pnpRangeStd(
+          z_pnp, f, geom_.bar_spacing_m, px_std,
+          std::abs(pose.outwardNormalOptical().dot(cv::normalize(pose.t))));
+        // A sample off the plate (background past a narrow or oblique plate)
+        // disagrees beyond 3 sigma: keep the PnP range alone.
+        if (std::abs(*depth - z_pnp) <= 3.0 * std::hypot(sd, sp)) {
+          z = fuseRange(*depth, sd, z_pnp, sp).z;
+        }
+      }
+      const cv::Vec3d t = pose.t * (z / z_pnp);  // PnP bearing, fused range
+      const auto model = plateModelPoints(geom_);
+      msg.emplace();
+      for (int i = 0; i < 4; ++i) {
+        const cv::Vec3d m(model[i].x, model[i].y, model[i].z);
+        msg->corners[i] = toPoint(opticalToBody(pose.R * m + t));
+      }
+      msg->center = toPoint(opticalToBody(t));
+      msg->depth_m = static_cast<float>(z);
+      // Position is kept either way; an unresolved flip withholds the normal.
+      if (!plateYawAmbiguous(pose, geom_, f, px_std, yaw_std_floor_, max_reproj_px_)) {
+        const cv::Vec3d nb = opticalToBody(pose.outwardNormalOptical());
+        msg->normal.x = nb[0];
+        msg->normal.y = nb[1];
+        msg->normal.z = nb[2];
+        msg->has_normal = true;
+        msg->normal_yaw_std = static_cast<float>(
+          plateYawStd(pose, geom_, f, px_std, yaw_std_floor_));
+      }
+      msg->robot_track_id = 0;
+    }
+    if (!msg) {return msg;}
+    msg->confidence = det.confidence;
+    msg->class_id = det.class_id;
+    return msg;
+  }
+
+  // Nearest cached depth frame within depth_max_age_s, as 16UC1; nullptr
+  // when none (logged). The caller then skips the whole frame.
+  cv_bridge::CvImageConstPtr depthFor(const builtin_interfaces::msg::Time & stamp)
+  {
     // The depth frame nearest the detection's stamp: pairing with the newest
     // read a later frame, after the panel and the head had moved (sim aim test,
     // 2026-09-29). depth_max_age_s_ still gates a stalled depth stream.
@@ -454,37 +596,42 @@ private:
     {
       std::lock_guard lk(depth_mutex_);
       for (const auto & m : recent_depth_) {
-        const double d = absStampDiffS(det_msg->header.stamp, m->header.stamp);
+        const double d = absStampDiffS(stamp, m->header.stamp);
         if (d < age) {age = d; depth_msg = m;}
       }
     }
-    if (!depth_msg) {return;}
+    if (!depth_msg) {return nullptr;}
     if (age > depth_max_age_s_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — skipping frame.",
         age, depth_max_age_s_);
-      return;
+      return nullptr;
     }
-
-    cv_bridge::CvImageConstPtr cv_depth;
     try {
-      cv_depth = cv_bridge::toCvShare(depth_msg, "16UC1");
+      return cv_bridge::toCvShare(depth_msg, "16UC1");
     } catch (const cv_bridge::Exception & e) {
       RCLCPP_ERROR_ONCE(get_logger(), "cv_bridge: %s", e.what());
-      return;
+      return nullptr;
     }
+  }
+
+  // Shared driving path for both input modes: one array per input frame.
+  template<typename Dets, typename Fn>
+  void publishFrame(const std_msgs::msg::Header & in, const Dets & dets, Fn deproject)
+  {
+    {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
+    const auto cv_depth = depthFor(in.stamp);
+    if (!cv_depth) {return;}
     const cv::Mat & D = cv_depth->image;
 
     dji_serial_bridge::msg::PanelDetectionArray out;
-    out.header.stamp = det_msg->header.stamp;
+    out.header.stamp = in.stamp;
     out.header.frame_id = output_frame_id_;
 
-    const std::size_t n = std::min(
-      det_msg->detections.size(),
-      static_cast<std::size_t>(max_detections_));
+    const std::size_t n = std::min(dets.size(), static_cast<std::size_t>(max_detections_));
     for (std::size_t i = 0; i < n; ++i) {
-      auto pd = deprojectDetection(det_msg->detections[i], D);
+      auto pd = deproject(dets[i], D);
       if (!pd) {
         continue;                   // one bad bbox doesn't drop the whole batch
       }
@@ -494,9 +641,23 @@ private:
     }
 
     // Published every driving frame, including empty, so rate stays
-    // 1:1 with /detections_output and downstream target-loss timeouts
+    // 1:1 with the input and downstream target-loss timeouts
     // still fire on true detection loss.
     panel_array_pub_->publish(out);
+  }
+
+  void onKeypoints(const dji_serial_bridge::msg::ArmorKeypointsArray::ConstSharedPtr & msg)
+  {
+    publishFrame(
+      msg->header, msg->detections,
+      [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
+  }
+
+  void onDetections(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg)
+  {
+    publishFrame(
+      msg->header, msg->detections,
+      [this](const auto & d, const cv::Mat & D) {return deprojectDetection(d, D);});
   }
 };
 

@@ -1,0 +1,11 @@
+# Armor-plate geometry for roi_depth_node's keypoint pose solve
+# (input_mode: armor_keypoints). The one home for these values; see
+# README.md#keypoint-plate-pose.
+#
+# PLACEHOLDER: the old small-armor plate (team CAD 135 x 125 mm, light bars
+# ~55 mm). The ARCC Season 2 dot-matrix panels have no CAD yet; replace both
+# numbers from the new panel CAD before trusting PnP range or normals.
+/**:
+  ros__parameters:
+    plate.light_bar_spacing_m: 0.135  # PLACEHOLDER: centre-to-centre between the two bars
+    plate.light_bar_length_m: 0.055   # PLACEHOLDER: one bar's length
