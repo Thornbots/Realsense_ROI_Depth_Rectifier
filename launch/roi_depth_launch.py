@@ -50,7 +50,12 @@ def generate_launch_description():
         DeclareLaunchArgument('network_height', default_value='640'),
         DeclareLaunchArgument('color_width', default_value='640'),
         DeclareLaunchArgument('color_height', default_value='480'),
+        DeclareLaunchArgument(
+            'input_mode', default_value='detections',
+            description="'detections' (Detection2DArray) or 'armor_keypoints'"),
     ]
+    armor_geometry = os.path.join(
+        get_package_share_directory('roi_depth_query'), 'config', 'armor_geometry.yaml')
 
     realsense = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(rs_launch),
@@ -91,7 +96,8 @@ def generate_launch_description():
         executable='roi_depth_node_exe',
         name='roi_depth_node',
         output='screen',
-        parameters=[{
+        parameters=[armor_geometry, {
+            'input_mode':        LaunchConfiguration('input_mode'),
             'depth_ns':          '/camera/depth',
             'color_ns':          '/camera/color',
             'depth_scale':       0.001,   # D435i Z16 default (mm -> m)

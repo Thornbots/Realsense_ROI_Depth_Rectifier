@@ -2,20 +2,23 @@
 
 Computes the depth **and bearing angles** for YOLO-style detections
 using an Intel RealSense camera, without running `rs2::align` on the full frame.
+With armor keypoints it also solves each plate's pose and normal.
 
 ## Architecture
 
 ```
-/detections_output (Detection2DArray, network space, ALL detections)
-        │
+/detections_output (Detection2DArray)       input_mode: detections (default)
+  or /cv/armor_keypoints (ArmorKeypointsArray)  input_mode: armor_keypoints
+        │   network space, ALL detections
         ▼
-  roi_depth_node   ← maps bbox network->color, samples depth LUT,
-                      deprojects bbox centre + 4 corners, per detection
+  roi_depth_node   ← maps bbox/keypoints network->color, samples depth LUT,
+                      deprojects bbox centre + 4 corners, or solves the
+                      plate pose from keypoints, per detection
         │
         └──▶  /cv/panel_detections  (dji_serial_bridge/msg/PanelDetectionArray)
 ```
 
-`roi_depth_node` is the driving node: `/detections_output` triggers each
+`roi_depth_node` is the driving node: the input array triggers each
 publish (depth is a cached resource, matched by stamp within
 `depth_max_age_s`), so output rate/stamps track the detector 1:1 and a
 stalled depth stream can't pair with a fresh detection. There is no
@@ -33,22 +36,73 @@ so the LUT can be built.
 
 | Topic | Type | Description |
 |---|---|---|
-| `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 bbox corners + center deprojected to 3-D in the camera body frame (metres), plus depth, confidence, class_id |
+| `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 corners + center in the camera body frame (metres), depth, confidence, class_id, and the plate normal when `has_normal` |
 
 `header.frame_id` comes from the `output_frame_id` parameter (default
 `camera`, matching the URDF's camera link). `header.stamp` matches the
-driving `/detections_output` stamp, not the depth image's. Corner order is
-TL, TR, BR, BL, and all points assume a planar panel at the single sampled
-depth. Bbox rotation (`theta`) isn't applied, since upstream YOLOv8 boxes
-are axis-aligned.
+driving input stamp, not the depth image's. Corner order is TL, TR, BR, BL.
+Box path (`has_normal` false): bbox corners and centre at the single
+sampled depth, a fronto-parallel planar panel; bbox rotation (`theta`)
+isn't applied, since upstream boxes are axis-aligned. Pose path
+(`has_normal` true): corners are the light-bar ends of the
+[solved plate](#keypoint-plate-pose).
 
 ### Coordinate convention
 
-Points use [REP 103](https://github.com/ros-infrastructure/rep/blob/master/rep-0103.rst)
-body axes (X forward, Y left, Z up), not its optical axes. `deprojectToRos` in
-[`roi_depth_node.cpp`](src/roi_depth_node.cpp) converts librealsense's optical
-point at the mean depth using the live colour `camera_info`. `output_frame_id`
-names the URDF `camera` link, not realsense-ros's optical frames.
+Points and normals use [REP 103](https://github.com/ros-infrastructure/rep/blob/master/rep-0103.rst)
+body axes (X forward, Y left, Z up), not its optical axes (X right, Y down,
+Z forward): body = (opt.z, −opt.x, −opt.y), `opticalToBody` in
+[`plate_pose.hpp`](src/plate_pose.hpp). Both paths deproject or solve in
+optical with the live colour `camera_info`, then convert. A plate facing
+the camera has normal ≈ (−1, 0, 0). `output_frame_id` names the URDF
+`camera` link, not realsense-ros's optical frames.
+
+### Keypoint plate pose
+
+With `input_mode: armor_keypoints`, a detection whose four keypoint
+confidences all reach `keypoint_min_confidence` is solved as a plate:
+
+1. Keypoints (TL, TR, BR, BL light-bar ends) go network->colour with the
+   [letterbox inverse](#network-space-to-colour-space).
+2. `cv::solvePnP`-family `SOLVEPNP_IPPE` (planar; the bar rectangle is not
+   square, so not `IPPE_SQUARE`) against the colour `camera_info` K and D.
+   Model points are ±spacing/2 × ±length/2 from
+   [`config/armor_geometry.yaml`](config/armor_geometry.yaml). Of the two
+   IPPE solutions the lower reprojection error wins.
+3. Range: the bbox depth sample (as the box path) and the PnP range are
+   fused by inverse variance. Depth σ = `depth_noise_base_m` +
+   `depth_noise_range_coeff`·z², the tracker's model; PnP σ =
+   √2·z²·σpx / (f·spacing·cos view), σpx = `keypoint_px_std`. The PnP
+   bearing is kept and the whole pose is scaled to the fused range. No
+   valid depth: PnP range alone.
+4. `normal` = outward plate normal (toward the camera), converted to the
+   [body frame](#coordinate-convention); `corners` = the model points under
+   the fused pose; `center` = the fused plate centre.
+5. `normal_yaw_std` is a pixel-noise model (bar-length perspective plus
+   width foreshortening, floored at `normal_yaw_std_floor_rad`), widened to
+   half the yaw gap between the IPPE solutions whenever the other one also
+   reprojects within `max_reproj_err_px`.
+
+A solve that throws, lands behind the camera, has its normal facing away
+or exceeds `max_reproj_err_px` falls back to the box path with
+`has_normal` false; so do low-confidence keypoints and `has_keypoints`
+false. The detection is never dropped for a bad solve.
+
+**Flip ambiguity.** A small plane under perspective has two poses that
+reproject almost equally, mirrored about the line of sight. With 1 px
+keypoint noise on the placeholder 135×55 mm plate (f = 615 px, 15° cant,
+`test_plate_pose`, 2000 trials), the lower-error pick is the wrong one
+40–50% of the time at every range:
+
+| Range | Yaw 0°: median yaw err | Yaw 30°: median | 30°, right solution picked | PnP range σ |
+|---|---|---|---|---|
+| 2 m | 13° | 11° | 5° | 0.07–0.09 m |
+| 4 m | 18° | 20° | 8° | 0.25–0.34 m |
+| 6 m | 24° | 26° | 11° | 0.53–0.68 m |
+
+The widened `normal_yaw_std` covers ≥98% of these errors at 3σ, so the
+tracker should weight yaw accordingly. Resolving the flip needs a prior
+this node lacks, such as the 15° cant against gravity.
 
 ### Network space to colour space
 
@@ -85,6 +139,20 @@ picture it was off by 60 px, and every box came out 25% too short.
 | `detections_topic` | `/detections_output` | Driving input (Detection2DArray, network space) |
 | `network_width`/`network_height` | `640`/`640` | TensorRT input size, for undoing the letterbox |
 | `color_width`/`color_height` | `640`/`480` | Color stream size, for undoing the letterbox |
+| `input_mode` | `detections` | `detections` (Detection2DArray) or `armor_keypoints` (ArmorKeypointsArray) |
+| `keypoints_topic` | `/cv/armor_keypoints` | Driving input in `armor_keypoints` mode |
+| `plate.light_bar_spacing_m` | `0.135` | **Placeholder** (old small armor): centre-to-centre light-bar distance; set in `config/armor_geometry.yaml` |
+| `plate.light_bar_length_m` | `0.055` | **Placeholder** (old small armor): one light bar's length |
+| `keypoint_min_confidence` | `0.5` | All 4 keypoints must reach this to attempt a pose |
+| `keypoint_px_std` | `1.0` | Keypoint noise, network px, for the range and yaw σ models |
+| `max_reproj_err_px` | `3.0` | RMS reprojection gate, colour px |
+| `normal_yaw_std_floor_rad` | `0.03` | Lower bound on `normal_yaw_std` |
+| `depth_noise_base_m`/`depth_noise_range_coeff` | `0.03`/`0.01` | Depth σ = base + coeff·z², for range fusion |
+
+The two plate values come from the new dot-matrix panel's CAD, which
+doesn't exist yet; [context](../docs/ARCC_2026_SENTRY_CONTEXT.md#armor-geometry-and-building-limits).
+`roi_depth_launch.py` loads `config/armor_geometry.yaml`; any other launch
+running this node in keypoint mode must load it too.
 
 ## Build
 
@@ -116,4 +184,6 @@ grouping, so this is an approximation of that decision. Parameters live in
 
 `colcon test --packages-select roi_depth_query` includes the timestamp
 synchronizer gtests (exact and approximate matching, strict slop, queue
-eviction and arrival-order ties) and the existing stamp-difference tests.
+eviction and arrival-order ties), the stamp-difference tests, and
+`test_plate_pose` (pose recovery, noise Monte Carlo, optical->body,
+fusion weights, degenerate solves; OpenCV only, no rclcpp).
