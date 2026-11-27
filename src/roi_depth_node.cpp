@@ -81,10 +81,12 @@
 #include <cstdlib>
 #include <deque>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cv_bridge/cv_bridge.hpp>
@@ -102,6 +104,7 @@
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 #include "plate_pose.hpp"
+#include "roi_depth_node.hpp"
 #include "stamp_diff.hpp"
 
 namespace roi_depth_query
@@ -371,7 +374,7 @@ private:
         "Building LUT: color %dx%d → depth %dx%d …", cw, ch, dw, dh);
     }
 
-    // Mark LUT invalid during rebuild so onDetections skips incomplete data
+    // Mark LUT invalid during rebuild so frames cannot use incomplete data
     lut_ready_ = false;
     lut_.resize(static_cast<size_t>(cw * ch));
 
@@ -583,7 +586,7 @@ private:
   }
 
   // Nearest cached depth frame within depth_max_age_s, as 16UC1; nullptr
-  // when none (logged). The caller then skips the whole frame.
+  // when none (logged). The caller publishes an empty frame.
   cv_bridge::CvImageConstPtr depthFor(const builtin_interfaces::msg::Time & stamp)
   {
     // The depth frame nearest the detection's stamp: pairing with the newest
@@ -604,7 +607,7 @@ private:
     if (age > depth_max_age_s_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — skipping frame.",
+        "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — publishing an empty array.",
         age, depth_max_age_s_);
       return nullptr;
     }
@@ -620,14 +623,17 @@ private:
   template<typename Dets, typename Fn>
   void publishFrame(const std_msgs::msg::Header & in, const Dets & dets, Fn deproject)
   {
-    {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
-    const auto cv_depth = depthFor(in.stamp);
-    if (!cv_depth) {return;}
-    const cv::Mat & D = cv_depth->image;
-
     dji_serial_bridge::msg::PanelDetectionArray out;
     out.header.stamp = in.stamp;
     out.header.frame_id = output_frame_id_;
+    bool ready;
+    {std::lock_guard lk(lut_mutex_); ready = lut_ready_;}
+    const auto cv_depth = ready ? depthFor(in.stamp) : nullptr;
+    if (!cv_depth) {
+      panel_array_pub_->publish(out);
+      return;
+    }
+    const cv::Mat & D = cv_depth->image;
 
     const std::size_t n = std::min(dets.size(), static_cast<std::size_t>(max_detections_));
     for (std::size_t i = 0; i < n; ++i) {
@@ -660,6 +666,11 @@ private:
       [this](const auto & d, const cv::Mat & D) {return deprojectDetection(d, D);});
   }
 };
+
+rclcpp::Node::SharedPtr make_roi_depth_node(const rclcpp::NodeOptions & options)
+{
+  return std::make_shared<RoiDepthNode>(options);
+}
 
 }  // namespace roi_depth_query
 

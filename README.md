@@ -38,6 +38,9 @@ so the LUT can be built.
 |---|---|---|
 | `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 corners + center in the camera body frame (metres), depth, confidence, class_id, and the plate normal when `has_normal` |
 
+Each driving input publishes exactly one array, including an empty array when no
+detections survive or calibration or depth is missing or stale.
+
 `header.frame_id` comes from the `output_frame_id` parameter (default
 `camera`, matching the URDF's camera link). `header.stamp` matches the
 driving input stamp, not the depth image's. Corner order is TL, TR, BR, BL.
