@@ -78,7 +78,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -101,6 +100,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+#include "detection_label.hpp"
 #include "plate_pose.hpp"
 #include "stamp_diff.hpp"
 
@@ -489,19 +489,28 @@ private:
   std::optional<dji_serial_bridge::msg::PanelDetection>
   deprojectDetection(const vision_msgs::msg::Detection2D & det, const cv::Mat & D)
   {
+    const vision_msgs::msg::ObjectHypothesis * best = nullptr;
+    for (const auto & result : det.results) {
+      const auto & hypothesis = result.hypothesis;
+      if (hypothesis.score > (best ? best->score : 0.0)) {
+        best = &hypothesis;
+      }
+    }
+    const auto class_id = best ? parseDetectionLabel(best->class_id) : std::nullopt;
+    if (!class_id) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000, "Dropping detection with invalid class label: '%s'",
+        best ? best->class_id.c_str() : "<missing>");
+      return std::nullopt;
+    }
     const auto & bbox = det.bbox;
     auto msg = deprojectBox(
       static_cast<float>((bbox.center.position.x - pad_x_) * scale_x_),
       static_cast<float>((bbox.center.position.y - pad_y_) * scale_y_),
       (bbox.size_x * scale_x_) / 2.0, (bbox.size_y * scale_y_) / 2.0, D);
-    if (!msg) {return msg;}
-    msg->confidence = 0.0f;
-    msg->class_id = -1;
-    for (const auto & hyp : det.results) {
-      if (hyp.hypothesis.score > msg->confidence) {
-        msg->confidence = static_cast<float>(hyp.hypothesis.score);
-        msg->class_id = std::atoi(hyp.hypothesis.class_id.c_str());
-      }
+    if (msg) {
+      msg->confidence = static_cast<float>(best->score);
+      msg->class_id = *class_id;
     }
     return msg;
   }
