@@ -91,10 +91,15 @@ double normalYawStd(
   const cv::Vec3d & t_optical, const cv::Vec3d & n_optical, const PlateGeometry & g,
   double f_px, double px_std, double floor_rad);
 
-// Reported normal yaw 1-sigma: the pixel-noise model, widened to half the
-// yaw gap between the IPPE solutions when the other one also fits within
-// max_reproj_err_px (unresolved flip, common past ~2 m at 1 px noise).
+// Reported normal yaw 1-sigma: the pixel-noise model at the chosen solution.
 double plateYawStd(
+  const PlatePose & pose, const PlateGeometry & g, double f_px, double px_std,
+  double floor_rad);
+
+// Unresolved flip: the other IPPE solution also fits within max_reproj_err_px
+// and its yaw differs by more than 2 sigma. Callers then withhold the normal
+// (a widened sigma would let a flipped yaw pass the tracker's gate).
+bool plateYawAmbiguous(
   const PlatePose & pose, const PlateGeometry & g, double f_px, double px_std,
   double floor_rad, double max_reproj_err_px);
 

@@ -110,16 +110,21 @@ double normalYawStd(
 
 double plateYawStd(
   const PlatePose & pose, const PlateGeometry & g, double f_px, double px_std,
+  double floor_rad)
+{
+  return normalYawStd(pose.t, pose.outwardNormalOptical(), g, f_px, px_std, floor_rad);
+}
+
+bool plateYawAmbiguous(
+  const PlatePose & pose, const PlateGeometry & g, double f_px, double px_std,
   double floor_rad, double max_reproj_err_px)
 {
-  const cv::Vec3d n = pose.outwardNormalOptical();
-  double sd = normalYawStd(pose.t, n, g, f_px, px_std, floor_rad);
-  if (pose.alt_reproj_err_px <= max_reproj_err_px) {
-    const cv::Vec3d a = opticalToBody(pose.alt_normal_optical), b = opticalToBody(n);
-    const double gap = std::atan2(a[1], a[0]) - std::atan2(b[1], b[0]);
-    sd = std::max(sd, 0.5 * std::abs(std::atan2(std::sin(gap), std::cos(gap))));
-  }
-  return std::min(sd, M_PI);
+  if (pose.alt_reproj_err_px > max_reproj_err_px) {return false;}
+  const cv::Vec3d a = opticalToBody(pose.alt_normal_optical);
+  const cv::Vec3d b = opticalToBody(pose.outwardNormalOptical());
+  const double gap = std::atan2(a[1], a[0]) - std::atan2(b[1], b[0]);
+  return std::abs(std::atan2(std::sin(gap), std::cos(gap))) >
+         2.0 * plateYawStd(pose, g, f_px, px_std, floor_rad);
 }
 
 }  // namespace roi_depth_query

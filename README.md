@@ -74,14 +74,16 @@ confidences all reach `keypoint_min_confidence` is solved as a plate:
    `depth_noise_range_coeff`·z², the tracker's model; PnP σ =
    √2·z²·σpx / (f·spacing·cos view), σpx = `keypoint_px_std`. The PnP
    bearing is kept and the whole pose is scaled to the fused range. No
-   valid depth: PnP range alone.
+   valid depth, or depth more than 3σ from the PnP range (a sample past a
+   narrow or oblique plate): PnP range alone.
 4. `normal` = outward plate normal (toward the camera), converted to the
    [body frame](#coordinate-convention); `corners` = the model points under
    the fused pose; `center` = the fused plate centre.
 5. `normal_yaw_std` is a pixel-noise model (bar-length perspective plus
-   width foreshortening, floored at `normal_yaw_std_floor_rad`), widened to
-   half the yaw gap between the IPPE solutions whenever the other one also
-   reprojects within `max_reproj_err_px`.
+   width foreshortening, floored at `normal_yaw_std_floor_rad`). When the
+   other IPPE solution also reprojects within `max_reproj_err_px` and its
+   yaw differs by more than 2σ, the flip is unresolved: position is kept
+   and `has_normal` is false.
 
 A solve that throws, lands behind the camera, has its normal facing away
 or exceeds `max_reproj_err_px` falls back to the box path with
@@ -100,9 +102,10 @@ keypoint noise on the placeholder 135×55 mm plate (f = 615 px, 15° cant,
 | 4 m | 18° | 20° | 8° | 0.25–0.34 m |
 | 6 m | 24° | 26° | 11° | 0.53–0.68 m |
 
-The widened `normal_yaw_std` covers ≥98% of these errors at 3σ, so the
-tracker should weight yaw accordingly. Resolving the flip needs a prior
-this node lacks, such as the 15° cant against gravity.
+Withholding unresolved flips keeps them out of the tracker; widening σ
+instead would let a flipped yaw pass its gate. `test_plate_pose` prints the
+fraction of normals still published. Resolving the flip needs a prior this
+node lacks, such as the 15° cant against gravity.
 
 ### Network space to colour space
 

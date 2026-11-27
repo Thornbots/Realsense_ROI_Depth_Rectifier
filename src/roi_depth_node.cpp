@@ -545,11 +545,15 @@ private:
       double z = z_pnp;
       const auto depth = sampleDepth(cx, cy, half_w, half_h, D);
       if (depth) {
-        z = fuseRange(
-          *depth, depthRangeStd(*depth, depth_noise_base_m_, depth_noise_coeff_),
-          z_pnp, pnpRangeStd(
-            z_pnp, f, geom_.bar_spacing_m, px_std,
-            std::abs(pose.outwardNormalOptical().dot(cv::normalize(pose.t))))).z;
+        const double sd = depthRangeStd(*depth, depth_noise_base_m_, depth_noise_coeff_);
+        const double sp = pnpRangeStd(
+          z_pnp, f, geom_.bar_spacing_m, px_std,
+          std::abs(pose.outwardNormalOptical().dot(cv::normalize(pose.t))));
+        // A sample off the plate (background past a narrow or oblique plate)
+        // disagrees beyond 3 sigma: keep the PnP range alone.
+        if (std::abs(*depth - z_pnp) <= 3.0 * std::hypot(sd, sp)) {
+          z = fuseRange(*depth, sd, z_pnp, sp).z;
+        }
       }
       const cv::Vec3d t = pose.t * (z / z_pnp);  // PnP bearing, fused range
       const auto model = plateModelPoints(geom_);
@@ -560,14 +564,16 @@ private:
       }
       msg->center = toPoint(opticalToBody(t));
       msg->depth_m = static_cast<float>(z);
-      const cv::Vec3d n = pose.outwardNormalOptical();
-      const cv::Vec3d nb = opticalToBody(n);
-      msg->normal.x = nb[0];
-      msg->normal.y = nb[1];
-      msg->normal.z = nb[2];
-      msg->has_normal = true;
-      msg->normal_yaw_std = static_cast<float>(
-        plateYawStd(pose, geom_, f, px_std, yaw_std_floor_, max_reproj_px_));
+      // Position is kept either way; an unresolved flip withholds the normal.
+      if (!plateYawAmbiguous(pose, geom_, f, px_std, yaw_std_floor_, max_reproj_px_)) {
+        const cv::Vec3d nb = opticalToBody(pose.outwardNormalOptical());
+        msg->normal.x = nb[0];
+        msg->normal.y = nb[1];
+        msg->normal.z = nb[2];
+        msg->has_normal = true;
+        msg->normal_yaw_std = static_cast<float>(
+          plateYawStd(pose, geom_, f, px_std, yaw_std_floor_));
+      }
       msg->robot_track_id = 0;
     }
     if (!msg) {return msg;}

@@ -70,7 +70,7 @@ double bodyYaw(const cv::Vec3d & n_optical)
 struct Stats
 {
   double rms_yaw_deg, median_yaw_deg, oracle_median_deg, flip_frac, rms_pos_m, range_std_m;
-  double model_yaw_std_deg, covered_frac;  // covered: |err| <= 3 * reported yaw std
+  double model_yaw_std_deg, published_frac, covered_frac;  // covered: |err| <= 3 * reported yaw std
   int ok;
 };
 
@@ -84,7 +84,7 @@ Stats monteCarlo(double range, double yaw, double cant, double px_std, int n, un
   const auto clean = project(R, t);
   std::vector<double> yaw_err, oracle_err;
   double pos2 = 0.0, z_sum = 0.0, z2_sum = 0.0;
-  int flips = 0, covered = 0;
+  int flips = 0, covered = 0, published = 0;
   for (int k = 0; k < n; ++k) {
     auto px = clean;
     for (auto & p : px) {
@@ -98,8 +98,12 @@ Stats monteCarlo(double range, double yaw, double cant, double px_std, int n, un
     const double e_alt = std::abs(wrap(bodyYaw(pose.alt_normal_optical) - true_yaw));
     if (e_alt < std::abs(e)) {++flips;}
     oracle_err.push_back(std::min(e_alt, std::abs(e)));
-    const double sd = roi_depth_query::plateYawStd(pose, kGeom, kF, px_std, 0.03, kGate);
-    if (std::abs(e) <= 3.0 * sd) {++covered;}
+    // Normals the node would publish (unresolved flips withheld).
+    if (!roi_depth_query::plateYawAmbiguous(pose, kGeom, kF, px_std, 0.03, kGate)) {
+      ++published;
+      const double sd = roi_depth_query::plateYawStd(pose, kGeom, kF, px_std, 0.03);
+      if (std::abs(e) <= 3.0 * sd) {++covered;}
+    }
     pos2 += std::pow(cv::norm(pose.t - t), 2);
     z_sum += pose.t[2];
     z2_sum += pose.t[2] * pose.t[2];
@@ -115,7 +119,8 @@ Stats monteCarlo(double range, double yaw, double cant, double px_std, int n, un
   s.median_yaw_deg = deg(yaw_err[s.ok / 2]);
   std::nth_element(oracle_err.begin(), oracle_err.begin() + s.ok / 2, oracle_err.end());
   s.oracle_median_deg = deg(oracle_err[s.ok / 2]);
-  s.covered_frac = static_cast<double>(covered) / s.ok;
+  s.covered_frac = published ? static_cast<double>(covered) / published : 1.0;
+  s.published_frac = static_cast<double>(published) / s.ok;
   s.flip_frac = static_cast<double>(flips) / s.ok;
   s.rms_pos_m = std::sqrt(pos2 / s.ok);
   const double zm = z_sum / s.ok;
@@ -170,10 +175,11 @@ TEST(PlatePose, NoisyYawAndPosition) {
         "%5.3f   %5.3f/%5.3f   | %5.1f    %4.2f\n",
         range, yaw_deg, s.rms_yaw_deg, s.median_yaw_deg, s.oracle_median_deg, s.flip_frac,
         s.rms_pos_m, s.range_std_m, z_model, s.model_yaw_std_deg, s.covered_frac);
+      std::printf("        published normals %4.2f\n", s.published_frac);
       EXPECT_GT(s.ok, 1900);
       // PnP range noise follows the model within 30%.
       EXPECT_NEAR(s.range_std_m / z_model, 1.0, 0.3);
-      // The reported std (with flip widening) covers the actual error.
+      // On published normals the reported std covers the actual error.
       EXPECT_GT(s.covered_frac, 0.9);
     }
   }
