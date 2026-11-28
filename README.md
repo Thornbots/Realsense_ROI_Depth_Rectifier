@@ -41,7 +41,7 @@ so the LUT can be built.
 Each driving input publishes exactly one array, including an empty array when no
 detections survive or calibration or depth is missing or stale. With
 `exact_stamp_sync`, keypoint inputs wait in order for calibration and identical-stamp
-depth. Both queues hold eight frames; overflow drops the oldest with a warning,
+depth. This mode requires reliable depth and camera-info publishers. Both queues hold eight frames; overflow drops the oldest with a warning,
 and a dropped keypoint input publishes an empty array to preserve output order.
 
 `header.frame_id` comes from the `output_frame_id` parameter (default

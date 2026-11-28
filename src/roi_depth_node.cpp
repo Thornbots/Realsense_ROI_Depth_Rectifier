@@ -162,9 +162,12 @@ public:
     depth_noise_base_m_ = declare_parameter<double>("depth_noise_base_m", 0.03);
     depth_noise_coeff_ = declare_parameter<double>("depth_noise_range_coeff", 0.01);
 
+    rclcpp::QoS sensor_qos = rclcpp::SensorDataQoS();
+    if (exact_stamp_sync_) {sensor_qos.reliable();}
+
     // ── subscriptions ────────────────────────────────────────────────────
     depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-      depth_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
+      depth_ns_ + "/camera_info", sensor_qos,
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
         {std::lock_guard lk(lut_mutex_);
           depth_intr_ = cameraInfoToIntrinsics(*m);
@@ -174,7 +177,7 @@ public:
       });
 
     color_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-      color_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
+      color_ns_ + "/camera_info", sensor_qos,
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
         {std::lock_guard lk(lut_mutex_);
           color_intr_ = cameraInfoToIntrinsics(*m);
@@ -228,7 +231,7 @@ public:
     // Depth is a cached resource only -- detections drive output. The last
     // few frames are kept, since a detection arrives after later frames have.
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
+      depth_ns_ + "/image_rect_raw", sensor_qos,
       [this](sensor_msgs::msg::Image::ConstSharedPtr m) {
         {std::lock_guard lk(depth_mutex_);
           recent_depth_.push_back(m);
@@ -684,6 +687,10 @@ private:
       pending_keypoints_.pop_front();
       publishFrame(msg->header, msg->detections,
         [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
+      {std::lock_guard lk(depth_mutex_);
+        auto it = std::find_if(recent_depth_.begin(), recent_depth_.end(),
+            [&msg](const auto & depth) {return depth->header.stamp == msg->header.stamp;});
+        if (it != recent_depth_.end()) {recent_depth_.erase(it);}}
     }
   }
 

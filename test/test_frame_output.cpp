@@ -49,11 +49,11 @@ protected:
     keypoints = peer->create_publisher<dji_serial_bridge::msg::ArmorKeypointsArray>(
       "/cv/armor_keypoints", 10);
     depth = peer->create_publisher<sensor_msgs::msg::Image>(
-      "/camera/depth/image_rect_raw", rclcpp::SensorDataQoS());
+      "/camera/depth/image_rect_raw", rclcpp::QoS(10).reliable());
     depth_info = peer->create_publisher<sensor_msgs::msg::CameraInfo>(
-      "/camera/depth/camera_info", rclcpp::SensorDataQoS());
+      "/camera/depth/camera_info", rclcpp::QoS(10).reliable());
     color_info = peer->create_publisher<sensor_msgs::msg::CameraInfo>(
-      "/camera/color/camera_info", rclcpp::SensorDataQoS());
+      "/camera/color/camera_info", rclcpp::QoS(10).reliable());
     executor.add_node(subject);
     executor.add_node(peer);
     spin(500ms);
