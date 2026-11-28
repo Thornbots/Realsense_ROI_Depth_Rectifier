@@ -81,10 +81,12 @@
 #include <cstdlib>
 #include <deque>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cv_bridge/cv_bridge.hpp>
@@ -102,6 +104,7 @@
 #include <vision_msgs/msg/detection2_d.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 #include "plate_pose.hpp"
+#include "roi_depth_node.hpp"
 #include "stamp_diff.hpp"
 
 namespace roi_depth_query
@@ -147,6 +150,7 @@ public:
       throw std::invalid_argument("input_mode must be 'detections' or 'armor_keypoints'");
     }
     keypoints_topic_ = declare_parameter<std::string>("keypoints_topic", "/cv/armor_keypoints");
+    exact_stamp_sync_ = declare_parameter<bool>("exact_stamp_sync", false);
     // Defaults mirror config/armor_geometry.yaml; PLACEHOLDER small-armor
     // values until the new dot-matrix panel CAD exists.
     geom_.bar_spacing_m = declare_parameter<double>("plate.light_bar_spacing_m", 0.135);
@@ -158,26 +162,31 @@ public:
     depth_noise_base_m_ = declare_parameter<double>("depth_noise_base_m", 0.03);
     depth_noise_coeff_ = declare_parameter<double>("depth_noise_range_coeff", 0.01);
 
+    rclcpp::QoS sensor_qos = rclcpp::SensorDataQoS();
+    if (exact_stamp_sync_) {sensor_qos.reliable();}
+
     // ── subscriptions ────────────────────────────────────────────────────
     depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-      depth_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
+      depth_ns_ + "/camera_info", sensor_qos,
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
-        std::lock_guard lk(lut_mutex_);
-        depth_intr_ = cameraInfoToIntrinsics(*m);
-        depth_intr_ready_ = true;
-        tryBuildLut();
+        {std::lock_guard lk(lut_mutex_);
+          depth_intr_ = cameraInfoToIntrinsics(*m);
+          depth_intr_ready_ = true;
+          tryBuildLut();}
+        drainExact();
       });
 
     color_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-      color_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
+      color_ns_ + "/camera_info", sensor_qos,
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
-        std::lock_guard lk(lut_mutex_);
-        color_intr_ = cameraInfoToIntrinsics(*m);
-        color_K_ = cv::Matx33d(m->k.data());
-        color_dist_ = m->d.empty() ?
-        cv::Mat::zeros(1, 5, CV_64F) : cv::Mat(m->d, true).reshape(1, 1);
-        color_intr_ready_ = true;
-        tryBuildLut();
+        {std::lock_guard lk(lut_mutex_);
+          color_intr_ = cameraInfoToIntrinsics(*m);
+          color_K_ = cv::Matx33d(m->k.data());
+          color_dist_ = m->d.empty() ?
+          cv::Mat::zeros(1, 5, CV_64F) : cv::Mat(m->d, true).reshape(1, 1);
+          color_intr_ready_ = true;
+          tryBuildLut();}
+        drainExact();
       });
 
     // Extrinsics arrive via parameter push from extrinsics_relay_node
@@ -192,40 +201,48 @@ public:
         auto trans = get_parameter("extrinsics.translation").as_double_array();
         // Non-identity check: at least one diagonal element non-zero
         if (rot.size() == 9 && (rot[0] != 0.0 || rot[4] != 0.0 || rot[8] != 0.0)) {
-          std::lock_guard lk(lut_mutex_);
-          rs2_extrinsics d2c{};
-          for (int i = 0; i < 9; ++i) {d2c.rotation[i] = static_cast<float>(rot[i]);}
-          for (int i = 0; i < 3; ++i) {d2c.translation[i] = static_cast<float>(trans[i]);}
-          depth_to_color_ = d2c;
+          {std::lock_guard lk(lut_mutex_);
+            rs2_extrinsics d2c{};
+            for (int i = 0; i < 9; ++i) {d2c.rotation[i] = static_cast<float>(rot[i]);}
+            for (int i = 0; i < 3; ++i) {d2c.translation[i] = static_cast<float>(trans[i]);}
+            depth_to_color_ = d2c;
           // Invert: c2d.R = d2c.R^T, c2d.t = -R^T * t
-          rs2_extrinsics c2d{};
-          for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-              c2d.rotation[r * 3 + c] = d2c.rotation[c * 3 + r];
+            rs2_extrinsics c2d{};
+            for (int r = 0; r < 3; ++r) {
+              for (int c = 0; c < 3; ++c) {
+                c2d.rotation[r * 3 + c] = d2c.rotation[c * 3 + r];
+              }
             }
-          }
-          for (int i = 0; i < 3; ++i) {
-            c2d.translation[i] = 0;
-            for (int j = 0; j < 3; ++j) {
-              c2d.translation[i] -= c2d.rotation[i * 3 + j] * d2c.translation[j];
+            for (int i = 0; i < 3; ++i) {
+              c2d.translation[i] = 0;
+              for (int j = 0; j < 3; ++j) {
+                c2d.translation[i] -= c2d.rotation[i * 3 + j] * d2c.translation[j];
+              }
             }
-          }
-          color_to_depth_ = c2d;
-          extr_ready_ = true;
-          extr_param_timer_->cancel();
-          tryBuildLut();
-          RCLCPP_INFO(get_logger(), "Extrinsics received via parameter.");
+            color_to_depth_ = c2d;
+            extr_ready_ = true;
+            extr_param_timer_->cancel();
+            tryBuildLut();
+            RCLCPP_INFO(get_logger(), "Extrinsics received via parameter.");}
+          drainExact();
         }
       });
 
     // Depth is a cached resource only -- detections drive output. The last
     // few frames are kept, since a detection arrives after later frames have.
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
+      depth_ns_ + "/image_rect_raw", sensor_qos,
       [this](sensor_msgs::msg::Image::ConstSharedPtr m) {
-        std::lock_guard lk(depth_mutex_);
-        recent_depth_.push_back(m);
-        if (recent_depth_.size() > kDepthHistory) {recent_depth_.pop_front();}
+        {std::lock_guard lk(depth_mutex_);
+          recent_depth_.push_back(m);
+          if (recent_depth_.size() > kDepthHistory) {
+            if (exact_stamp_sync_ && input_mode_ == "armor_keypoints") {
+              RCLCPP_WARN(get_logger(), "Exact sync depth buffer full; dropping oldest depth.");
+            }
+            recent_depth_.pop_front();
+          }
+        }
+        drainExact();
       });
 
     if (input_mode_ == "armor_keypoints") {
@@ -313,6 +330,8 @@ private:
   double scale_x_, scale_y_;   // color px per network px
 
   std::string input_mode_, keypoints_topic_;
+  bool exact_stamp_sync_;
+  std::deque<dji_serial_bridge::msg::ArmorKeypointsArray::ConstSharedPtr> pending_keypoints_;
   PlateGeometry geom_{};
   double min_kp_conf_, kp_px_std_, max_reproj_px_, yaw_std_floor_;
   double depth_noise_base_m_, depth_noise_coeff_;
@@ -371,7 +390,7 @@ private:
         "Building LUT: color %dx%d → depth %dx%d …", cw, ch, dw, dh);
     }
 
-    // Mark LUT invalid during rebuild so onDetections skips incomplete data
+    // Mark LUT invalid during rebuild so frames cannot use incomplete data
     lut_ready_ = false;
     lut_.resize(static_cast<size_t>(cw * ch));
 
@@ -583,7 +602,7 @@ private:
   }
 
   // Nearest cached depth frame within depth_max_age_s, as 16UC1; nullptr
-  // when none (logged). The caller then skips the whole frame.
+  // when none (logged). The caller publishes an empty frame.
   cv_bridge::CvImageConstPtr depthFor(const builtin_interfaces::msg::Time & stamp)
   {
     // The depth frame nearest the detection's stamp: pairing with the newest
@@ -604,7 +623,7 @@ private:
     if (age > depth_max_age_s_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — skipping frame.",
+        "Depth too stale for detections (|Δt|=%.3fs > %.3fs) — publishing an empty array.",
         age, depth_max_age_s_);
       return nullptr;
     }
@@ -620,14 +639,17 @@ private:
   template<typename Dets, typename Fn>
   void publishFrame(const std_msgs::msg::Header & in, const Dets & dets, Fn deproject)
   {
-    {std::lock_guard lk(lut_mutex_); if (!lut_ready_) {return;}}
-    const auto cv_depth = depthFor(in.stamp);
-    if (!cv_depth) {return;}
-    const cv::Mat & D = cv_depth->image;
-
     dji_serial_bridge::msg::PanelDetectionArray out;
     out.header.stamp = in.stamp;
     out.header.frame_id = output_frame_id_;
+    bool ready;
+    {std::lock_guard lk(lut_mutex_); ready = lut_ready_;}
+    const auto cv_depth = ready ? depthFor(in.stamp) : nullptr;
+    if (!cv_depth) {
+      panel_array_pub_->publish(out);
+      return;
+    }
+    const cv::Mat & D = cv_depth->image;
 
     const std::size_t n = std::min(dets.size(), static_cast<std::size_t>(max_detections_));
     for (std::size_t i = 0; i < n; ++i) {
@@ -646,8 +668,47 @@ private:
     panel_array_pub_->publish(out);
   }
 
+  void drainExact()
+  {
+    if (!exact_stamp_sync_ || input_mode_ != "armor_keypoints") {return;}
+    bool ready;
+    {std::lock_guard lk(lut_mutex_); ready = lut_ready_;}
+    if (!ready) {return;}
+    while (!pending_keypoints_.empty()) {
+      const auto & stamp = pending_keypoints_.front()->header.stamp;
+      bool found = false;
+      {std::lock_guard lk(depth_mutex_);
+        for (const auto & depth : recent_depth_) {
+          if (depth->header.stamp == stamp) {found = true; break;}
+        }
+      }
+      if (!found) {break;}
+      auto msg = pending_keypoints_.front();
+      pending_keypoints_.pop_front();
+      publishFrame(msg->header, msg->detections,
+        [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
+      {std::lock_guard lk(depth_mutex_);
+        auto it = std::find_if(recent_depth_.begin(), recent_depth_.end(),
+            [&msg](const auto & depth) {return depth->header.stamp == msg->header.stamp;});
+        if (it != recent_depth_.end()) {recent_depth_.erase(it);}}
+    }
+  }
+
   void onKeypoints(const dji_serial_bridge::msg::ArmorKeypointsArray::ConstSharedPtr & msg)
   {
+    if (exact_stamp_sync_) {
+      if (pending_keypoints_.size() == kDepthHistory) {
+        RCLCPP_WARN(get_logger(), "Exact sync keypoint buffer full; dropping oldest input.");
+        dji_serial_bridge::msg::PanelDetectionArray out;
+        out.header = pending_keypoints_.front()->header;
+        out.header.frame_id = output_frame_id_;
+        panel_array_pub_->publish(out);
+        pending_keypoints_.pop_front();
+      }
+      pending_keypoints_.push_back(msg);
+      drainExact();
+      return;
+    }
     publishFrame(
       msg->header, msg->detections,
       [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
@@ -660,6 +721,11 @@ private:
       [this](const auto & d, const cv::Mat & D) {return deprojectDetection(d, D);});
   }
 };
+
+rclcpp::Node::SharedPtr make_roi_depth_node(const rclcpp::NodeOptions & options)
+{
+  return std::make_shared<RoiDepthNode>(options);
+}
 
 }  // namespace roi_depth_query
 

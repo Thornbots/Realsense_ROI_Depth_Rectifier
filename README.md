@@ -38,6 +38,12 @@ so the LUT can be built.
 |---|---|---|
 | `/cv/panel_detections` | `dji_serial_bridge/msg/PanelDetectionArray` | One entry per detection with valid depth: 4 corners + center in the camera body frame (metres), depth, confidence, class_id, and the plate normal when `has_normal` |
 
+Each driving input publishes exactly one array, including an empty array when no
+detections survive or calibration or depth is missing or stale. With
+`exact_stamp_sync`, keypoint inputs wait in order for calibration and identical-stamp
+depth. This mode requires reliable depth and camera-info publishers. Both queues hold eight frames; overflow drops the oldest with a warning,
+and a dropped keypoint input publishes an empty array to preserve output order.
+
 `header.frame_id` comes from the `output_frame_id` parameter (default
 `camera`, matching the URDF's camera link). `header.stamp` matches the
 driving input stamp, not the depth image's. Corner order is TL, TR, BR, BL.
@@ -142,6 +148,7 @@ picture it was off by 60 px, and every box came out 25% too short.
 | `detections_topic` | `/detections_output` | Driving input (Detection2DArray, network space) |
 | `network_width`/`network_height` | `640`/`640` | TensorRT input size, for undoing the letterbox |
 | `color_width`/`color_height` | `640`/`480` | Color stream size, for undoing the letterbox |
+| `exact_stamp_sync` | `false` | In keypoint mode, wait for identical-stamp depth and calibration (bounded queues) |
 | `input_mode` | `detections` | `detections` (Detection2DArray) or `armor_keypoints` (ArmorKeypointsArray) |
 | `keypoints_topic` | `/cv/armor_keypoints` | Driving input in `armor_keypoints` mode |
 | `plate.light_bar_spacing_m` | `0.135` | **Placeholder** (old small armor): centre-to-centre light-bar distance; set in `config/armor_geometry.yaml` |
