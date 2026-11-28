@@ -38,7 +38,8 @@ protected:
   {
     rclcpp::NodeOptions options;
     options.parameter_overrides({
-      rclcpp::Parameter("input_mode", GetParam()),
+      rclcpp::Parameter("input_mode", GetParam() == "exact" ? "armor_keypoints" : GetParam()),
+      rclcpp::Parameter("exact_stamp_sync", GetParam() == "exact"),
       rclcpp::Parameter("extrinsics.rotation", std::vector<double>{1, 0, 0, 0, 1, 0, 0, 0, 1})});
     subject = roi_depth_query::make_roi_depth_node(options);
     peer = std::make_shared<rclcpp::Node>("frame_output_test");
@@ -133,6 +134,7 @@ protected:
 
 TEST_P(FrameOutput, PublishesOncePerInput)
 {
+  if (GetParam() == "exact") {GTEST_SKIP();}
   send(1, true);  // No calibration.
   calibrate();
   send(2, true);  // No depth.
@@ -150,7 +152,29 @@ TEST_P(FrameOutput, PublishesOncePerInput)
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Modes, FrameOutput, ::testing::Values("detections", "armor_keypoints"));
+TEST_P(FrameOutput, ExactSyncWaitsAndPreservesOrder)
+{
+  if (GetParam() != "exact") {GTEST_SKIP();}
+  send(1, true);
+  send_depth(2);
+  send(2, true);
+  send_depth(1);
+  EXPECT_TRUE(received.empty());
+  calibrate();
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[0].header.stamp.sec, 1);
+  EXPECT_EQ(received[1].header.stamp.sec, 2);
+  EXPECT_EQ(received[0].detections.size(), 1u);
+  EXPECT_EQ(received[1].detections.size(), 1u);
+  send_depth(3);
+  send(3, true);
+  ASSERT_EQ(received.size(), 3u);
+  EXPECT_EQ(received[2].header.stamp.sec, 3);
+  EXPECT_EQ(received[2].detections.size(), 1u);
+}
+
+INSTANTIATE_TEST_SUITE_P(Modes, FrameOutput,
+  ::testing::Values("detections", "armor_keypoints", "exact"));
 
 int main(int argc, char ** argv)
 {

@@ -150,6 +150,7 @@ public:
       throw std::invalid_argument("input_mode must be 'detections' or 'armor_keypoints'");
     }
     keypoints_topic_ = declare_parameter<std::string>("keypoints_topic", "/cv/armor_keypoints");
+    exact_stamp_sync_ = declare_parameter<bool>("exact_stamp_sync", false);
     // Defaults mirror config/armor_geometry.yaml; PLACEHOLDER small-armor
     // values until the new dot-matrix panel CAD exists.
     geom_.bar_spacing_m = declare_parameter<double>("plate.light_bar_spacing_m", 0.135);
@@ -165,22 +166,24 @@ public:
     depth_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
       depth_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
-        std::lock_guard lk(lut_mutex_);
-        depth_intr_ = cameraInfoToIntrinsics(*m);
-        depth_intr_ready_ = true;
-        tryBuildLut();
+        {std::lock_guard lk(lut_mutex_);
+          depth_intr_ = cameraInfoToIntrinsics(*m);
+          depth_intr_ready_ = true;
+          tryBuildLut();}
+        drainExact();
       });
 
     color_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
       color_ns_ + "/camera_info", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr m) {
-        std::lock_guard lk(lut_mutex_);
-        color_intr_ = cameraInfoToIntrinsics(*m);
-        color_K_ = cv::Matx33d(m->k.data());
-        color_dist_ = m->d.empty() ?
-        cv::Mat::zeros(1, 5, CV_64F) : cv::Mat(m->d, true).reshape(1, 1);
-        color_intr_ready_ = true;
-        tryBuildLut();
+        {std::lock_guard lk(lut_mutex_);
+          color_intr_ = cameraInfoToIntrinsics(*m);
+          color_K_ = cv::Matx33d(m->k.data());
+          color_dist_ = m->d.empty() ?
+          cv::Mat::zeros(1, 5, CV_64F) : cv::Mat(m->d, true).reshape(1, 1);
+          color_intr_ready_ = true;
+          tryBuildLut();}
+        drainExact();
       });
 
     // Extrinsics arrive via parameter push from extrinsics_relay_node
@@ -195,29 +198,30 @@ public:
         auto trans = get_parameter("extrinsics.translation").as_double_array();
         // Non-identity check: at least one diagonal element non-zero
         if (rot.size() == 9 && (rot[0] != 0.0 || rot[4] != 0.0 || rot[8] != 0.0)) {
-          std::lock_guard lk(lut_mutex_);
-          rs2_extrinsics d2c{};
-          for (int i = 0; i < 9; ++i) {d2c.rotation[i] = static_cast<float>(rot[i]);}
-          for (int i = 0; i < 3; ++i) {d2c.translation[i] = static_cast<float>(trans[i]);}
-          depth_to_color_ = d2c;
+          {std::lock_guard lk(lut_mutex_);
+            rs2_extrinsics d2c{};
+            for (int i = 0; i < 9; ++i) {d2c.rotation[i] = static_cast<float>(rot[i]);}
+            for (int i = 0; i < 3; ++i) {d2c.translation[i] = static_cast<float>(trans[i]);}
+            depth_to_color_ = d2c;
           // Invert: c2d.R = d2c.R^T, c2d.t = -R^T * t
-          rs2_extrinsics c2d{};
-          for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-              c2d.rotation[r * 3 + c] = d2c.rotation[c * 3 + r];
+            rs2_extrinsics c2d{};
+            for (int r = 0; r < 3; ++r) {
+              for (int c = 0; c < 3; ++c) {
+                c2d.rotation[r * 3 + c] = d2c.rotation[c * 3 + r];
+              }
             }
-          }
-          for (int i = 0; i < 3; ++i) {
-            c2d.translation[i] = 0;
-            for (int j = 0; j < 3; ++j) {
-              c2d.translation[i] -= c2d.rotation[i * 3 + j] * d2c.translation[j];
+            for (int i = 0; i < 3; ++i) {
+              c2d.translation[i] = 0;
+              for (int j = 0; j < 3; ++j) {
+                c2d.translation[i] -= c2d.rotation[i * 3 + j] * d2c.translation[j];
+              }
             }
-          }
-          color_to_depth_ = c2d;
-          extr_ready_ = true;
-          extr_param_timer_->cancel();
-          tryBuildLut();
-          RCLCPP_INFO(get_logger(), "Extrinsics received via parameter.");
+            color_to_depth_ = c2d;
+            extr_ready_ = true;
+            extr_param_timer_->cancel();
+            tryBuildLut();
+            RCLCPP_INFO(get_logger(), "Extrinsics received via parameter.");}
+          drainExact();
         }
       });
 
@@ -226,9 +230,16 @@ public:
     depth_sub_ = create_subscription<sensor_msgs::msg::Image>(
       depth_ns_ + "/image_rect_raw", rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::Image::ConstSharedPtr m) {
-        std::lock_guard lk(depth_mutex_);
-        recent_depth_.push_back(m);
-        if (recent_depth_.size() > kDepthHistory) {recent_depth_.pop_front();}
+        {std::lock_guard lk(depth_mutex_);
+          recent_depth_.push_back(m);
+          if (recent_depth_.size() > kDepthHistory) {
+            if (exact_stamp_sync_ && input_mode_ == "armor_keypoints") {
+              RCLCPP_WARN(get_logger(), "Exact sync depth buffer full; dropping oldest depth.");
+            }
+            recent_depth_.pop_front();
+          }
+        }
+        drainExact();
       });
 
     if (input_mode_ == "armor_keypoints") {
@@ -316,6 +327,8 @@ private:
   double scale_x_, scale_y_;   // color px per network px
 
   std::string input_mode_, keypoints_topic_;
+  bool exact_stamp_sync_;
+  std::deque<dji_serial_bridge::msg::ArmorKeypointsArray::ConstSharedPtr> pending_keypoints_;
   PlateGeometry geom_{};
   double min_kp_conf_, kp_px_std_, max_reproj_px_, yaw_std_floor_;
   double depth_noise_base_m_, depth_noise_coeff_;
@@ -652,8 +665,43 @@ private:
     panel_array_pub_->publish(out);
   }
 
+  void drainExact()
+  {
+    if (!exact_stamp_sync_ || input_mode_ != "armor_keypoints") {return;}
+    bool ready;
+    {std::lock_guard lk(lut_mutex_); ready = lut_ready_;}
+    if (!ready) {return;}
+    while (!pending_keypoints_.empty()) {
+      const auto & stamp = pending_keypoints_.front()->header.stamp;
+      bool found = false;
+      {std::lock_guard lk(depth_mutex_);
+        for (const auto & depth : recent_depth_) {
+          if (depth->header.stamp == stamp) {found = true; break;}
+        }
+      }
+      if (!found) {break;}
+      auto msg = pending_keypoints_.front();
+      pending_keypoints_.pop_front();
+      publishFrame(msg->header, msg->detections,
+        [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
+    }
+  }
+
   void onKeypoints(const dji_serial_bridge::msg::ArmorKeypointsArray::ConstSharedPtr & msg)
   {
+    if (exact_stamp_sync_) {
+      if (pending_keypoints_.size() == kDepthHistory) {
+        RCLCPP_WARN(get_logger(), "Exact sync keypoint buffer full; dropping oldest input.");
+        dji_serial_bridge::msg::PanelDetectionArray out;
+        out.header = pending_keypoints_.front()->header;
+        out.header.frame_id = output_frame_id_;
+        panel_array_pub_->publish(out);
+        pending_keypoints_.pop_front();
+      }
+      pending_keypoints_.push_back(msg);
+      drainExact();
+      return;
+    }
     publishFrame(
       msg->header, msg->detections,
       [this](const auto & d, const cv::Mat & D) {return deprojectKeypoints(d, D);});
